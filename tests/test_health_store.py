@@ -215,8 +215,8 @@ def test_query_isolation_by_binding(store):
     now = int(datetime.datetime.now().timestamp())
     _bind_device(store, "AA:BB:CC", code="AAAAAA")
     _bind_device(store, "DD:EE:FF", code="BBBBBB", umo="umo:other")
-    store.ingest(_device("AA:BB:CC"), [_sample(now - 60, steps=100, hr=80)])
-    store.ingest(_device("DD:EE:FF"), [_sample(now - 30, steps=500, hr=95)])
+    store.ingest(_device("AA:BB:CC", battery=80), [_sample(now - 60, steps=100, hr=80)])
+    store.ingest(_device("DD:EE:FF", battery=90), [_sample(now - 30, steps=500, hr=95)])
 
     # 未绑定时：查不到任何数据
     assert store.device_ids_for_umo("umo:stranger") == []
@@ -234,6 +234,12 @@ def test_query_isolation_by_binding(store):
     assert other_latest is not None and other_latest["hr"] == 95
     # A 的心率对 other 不可见（B 已绑 other，A 只绑 test）
     assert len(store.device_ids_for_umo("umo:test")) == 1
+
+    # 电量查询带作用域（回归：battery 的 SQL 曾因表别名错误而失败）
+    own_batteries = store.battery(device_ids=store.device_ids_for_umo("umo:test"))
+    assert len(own_batteries) == 1
+    assert own_batteries[0]["device"] == "dev-CC"
+    assert store.battery(device_ids=store.device_ids_for_umo("umo:stranger")) == []
 
 
 def test_ingest_keeps_first_binding_code(store):

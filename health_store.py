@@ -500,8 +500,8 @@ class HealthStore:
         scope, scope_args = self._scope_sql(device_ids, column="d.id")
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT name, address, battery, last_seen FROM devices"
-                f" WHERE battery IS NOT NULL{scope} ORDER BY last_seen DESC",
+                f"SELECT d.name, d.address, d.battery, d.last_seen FROM devices d"
+                f" WHERE d.battery IS NOT NULL{scope} ORDER BY d.last_seen DESC",
                 scope_args,
             ).fetchall()
         return [
