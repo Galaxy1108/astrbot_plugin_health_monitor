@@ -1,0 +1,26 @@
+{
+  "token": {
+    "description": "上传令牌（X-Health-Token），手机端需携带；留空则关闭二次校验",
+    "type": "string",
+    "default": "",
+    "hint": "建议设置一个随机长字符串，并在手机端 Gadgetbridge Webhook 设置中填入同一个值。"
+  },
+  "hr_high_threshold": {
+    "description": "心率过高告警阈值（次/分）",
+    "type": "int",
+    "default": 120,
+    "hint": "单次上传批次中心率超过该值时触发告警，同设备 30 分钟内不重复告警。"
+  },
+  "battery_low_threshold": {
+    "description": "电量过低告警阈值（%）",
+    "type": "int",
+    "default": 15,
+    "hint": "设备上报电量低于或等于该值时触发告警。"
+  },
+  "alert_target_umo": {
+    "description": "告警推送目标会话（unified_msg_origin），留空则只入库不推送",
+    "type": "string",
+    "default": "",
+    "hint": "形如 qq_official:botid:group:群号 或 aiocqhttp:botid:private:QQ号。可从其他插件（如 courier 的会话清单）获取，或询问机器人自己的会话信息。"
+  }
+}
