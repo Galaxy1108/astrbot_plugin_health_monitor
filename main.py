@@ -30,6 +30,7 @@ from astrbot.core.star.star_tools import StarTools
 from .health_store import HealthStore, normalize_binding_code
 from .health_tools import (
     HealthAlertsTool,
+    HealthExtendedTool,
     HealthLatestTool,
     HealthSleepTool,
     HealthStepsTool,
@@ -75,6 +76,7 @@ class HealthMonitorPlugin(Star):
             HealthStepsTool(store=self.store),
             HealthSleepTool(store=self.store),
             HealthAlertsTool(store=self.store),
+            HealthExtendedTool(store=self.store),
         )
 
         logger.info(f"{PLUGIN_NAME} 已加载：数据目录 {data_dir}")
@@ -96,12 +98,15 @@ class HealthMonitorPlugin(Star):
 
         device = body.get("device")
         samples = body.get("samples")
+        extended = body.get("extended")
         if not isinstance(device, dict) or not isinstance(samples, list):
             return error_response("缺少 device 或 samples 字段")
+        if extended is not None and not isinstance(extended, dict):
+            return error_response("extended 必须是对象")
 
         try:
             received, alert, newly_bound_umos = await asyncio.to_thread(
-                self.store.ingest, device, samples
+                self.store.ingest, device, samples, extended
             )
         except ValueError as exc:
             return error_response(str(exc), status_code=400)

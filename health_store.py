@@ -11,6 +11,7 @@ Web API 与 LLM 工具。
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -64,6 +65,17 @@ CREATE TABLE IF NOT EXISTS pending_binds (
     created_at INTEGER NOT NULL,
     PRIMARY KEY (code, umo)
 );
+
+-- 扩展指标（血氧/压力/HRV/呼吸率/睡眠时段/每日汇总/PAI/运动记录）
+-- payload 为手机端上传的行 JSON（键为小写列名，timestamp 为 epoch 秒）
+CREATE TABLE IF NOT EXISTS extended (
+    device_id INTEGER NOT NULL,
+    table_name TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (device_id, table_name, ts, seq)
+);
 """
 
 #: 同一 (设备, 告警类型) 的去重窗口，秒
@@ -71,6 +83,9 @@ ALERT_DEDUPE_SECONDS = 30 * 60
 
 #: 一次上传允许的最大样本条数（防御异常客户端）
 MAX_SAMPLES_PER_UPLOAD = 100_000
+
+#: 一次上传允许的最大扩展行数（防御异常客户端）
+MAX_EXTENDED_PER_CATEGORY = 20_000
 
 SLEEP_KINDS = {"LIGHT_SLEEP", "DEEP_SLEEP", "REM_SLEEP", "AWAKE_SLEEP"}
 
@@ -114,12 +129,18 @@ class HealthStore:
 
     # ------------------------------------------------------------------ 写入
 
-    def ingest(self, device: dict[str, Any], samples: list[dict[str, Any]]) -> tuple[int, dict | None, list[str]]:
-        """写入一批样本（按 (device, ts) upsert 去重）。
+    def ingest(
+        self,
+        device: dict[str, Any],
+        samples: list[dict[str, Any]],
+        extended: dict[str, Any] | None = None,
+    ) -> tuple[int, dict | None, list[str]]:
+        """写入一批样本（按 (device, ts) upsert 去重）与扩展指标。
 
         返回 (接受条数, 告警或 None, 本次上传刚完成绑定的会话 umo 列表)。
         device: {"address", "name", "type", "battery"(可选), "binding_code"(可选)}
         samples: [{"ts", "kind", "steps", "hr", "intensity"}, ...]
+        extended: {"spo2": [{"timestamp", "spo2", ...}, ...], ...}（可选）
         """
         address = str(device.get("address") or "").strip()
         if not address:
@@ -185,6 +206,41 @@ class HealthStore:
                         )
                     self._conn.execute("DELETE FROM pending_binds WHERE code=?", (binding_code,))
                     newly_bound_umos = [p["umo"] for p in pending]
+
+            # 扩展指标（血氧/压力/HRV/...），按 (device, category, ts, seq) upsert
+            if isinstance(extended, dict):
+                ext_rows: list[tuple] = []
+                for category, rows in extended.items():
+                    if not isinstance(rows, list):
+                        continue
+                    for r in rows[:MAX_EXTENDED_PER_CATEGORY]:
+                        if not isinstance(r, dict):
+                            continue
+                        ts = self._clean_int(r.get("timestamp"))
+                        if ts is None or ts <= 0:
+                            continue
+                        seq = self._clean_int(r.get("seq")) or 0
+                        payload = {
+                            k: v
+                            for k, v in r.items()
+                            if k not in ("timestamp", "seq", "device_id", "user_id")
+                        }
+                        ext_rows.append(
+                            (
+                                device_id,
+                                str(category)[:64],
+                                ts,
+                                seq,
+                                json.dumps(payload, ensure_ascii=False),
+                            )
+                        )
+                if ext_rows:
+                    self._conn.executemany(
+                        "INSERT INTO extended (device_id, table_name, ts, seq, payload)"
+                        " VALUES (?, ?, ?, ?, ?)"
+                        " ON CONFLICT(device_id, table_name, ts, seq) DO UPDATE SET payload=excluded.payload",
+                        ext_rows,
+                    )
 
             self._conn.commit()
 
@@ -449,6 +505,41 @@ class HealthStore:
                 f"SELECT MAX(ts) AS t FROM samples WHERE 1=1{scope}", scope_args
             ).fetchone()
         return int(row["t"]) if row and row["t"] is not None else None
+
+    # ------------------------------------------------------------ 扩展指标
+
+    def extended_latest(self, category: str, device_ids: list[int] | None = None, limit: int = 5) -> list[dict]:
+        """某类扩展指标的最新若干条（按时间倒序）。"""
+        scope, scope_args = self._scope_sql(device_ids, column="e.device_id")
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT ts, payload FROM extended e"
+                f" WHERE table_name=?{scope} ORDER BY ts DESC, seq DESC LIMIT ?",
+                (category, *scope_args, max(1, limit)),
+            ).fetchall()
+        return [self._merge_payload(int(r["ts"]), r["payload"]) for r in rows]
+
+    def extended_range(self, category: str, device_ids: list[int] | None, since: int) -> list[dict]:
+        """某类扩展指标在 since 之后的全部条目（按时间升序）。"""
+        scope, scope_args = self._scope_sql(device_ids, column="e.device_id")
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT ts, payload FROM extended e"
+                f" WHERE table_name=? AND ts >= ?{scope} ORDER BY ts ASC, seq ASC LIMIT 5000",
+                (category, since, *scope_args),
+            ).fetchall()
+        return [self._merge_payload(int(r["ts"]), r["payload"]) for r in rows]
+
+    @staticmethod
+    def _merge_payload(ts: int, payload_json: str) -> dict:
+        try:
+            payload = json.loads(payload_json)
+            if isinstance(payload, dict):
+                payload["timestamp"] = ts
+                return payload
+        except (TypeError, ValueError):
+            pass
+        return {"timestamp": ts}
 
     # ---------------------------------------------------------------- 工具
 

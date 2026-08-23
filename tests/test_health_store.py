@@ -204,6 +204,68 @@ def test_ingest_keeps_first_binding_code(store):
     assert found is not None
 
 
+# ---------------------------------------------------------------- 扩展指标
+
+def test_extended_ingest_and_query(store):
+    device = _device("AA:BB:CC", binding_code="EXTND1")
+    store.ingest(device, [_sample(1000)])
+    now = int(datetime.datetime.now().timestamp())
+    store.ingest(
+        device,
+        [_sample(1060)],
+        extended={
+            "spo2": [
+                {"timestamp": now - 120, "spo2": 97, "device_id": 1},
+                {"timestamp": now - 60, "spo2": 98},
+            ],
+            "hrv": [
+                {"timestamp": now - 60, "seq": 1, "rr_millis": 800},
+                {"timestamp": now - 60, "seq": 2, "rr_millis": 810},
+            ],
+            "workouts": [{"timestamp": now - 3600, "name": "晨跑", "activity_kind": 16}],
+        },
+    )
+    # 同 (device, category, ts, seq) 覆盖更新
+    store.ingest(device, [], extended={"spo2": [{"timestamp": now - 120, "spo2": 99}]})
+
+    latest = store.extended_latest("spo2", device_ids=[1], limit=2)
+    assert len(latest) == 2
+    assert latest[0]["spo2"] == 98
+    assert latest[1]["spo2"] == 99  # 覆盖生效
+    assert "device_id" not in latest[0]  # 服务端剥离内部列
+
+    hrv = store.extended_latest("hrv", device_ids=[1], limit=5)
+    assert len(hrv) == 2  # seq 区分同 ts 的多行
+    assert hrv[0]["rr_millis"] == 810
+
+    workouts = store.extended_range("workouts", device_ids=[1], since=0)
+    assert len(workouts) == 1
+    assert workouts[0]["name"] == "晨跑"
+
+    # 隔离：空列表/其他设备查不到
+    assert store.extended_latest("spo2", device_ids=[], limit=2) == []
+    assert store.extended_latest("spo2", device_ids=[999], limit=2) == []
+    assert store.extended_range("spo2", device_ids=[], since=0) == []
+
+
+def test_extended_invalid_rows_skipped(store):
+    device = _device("AA:BB:CC")
+    now = int(datetime.datetime.now().timestamp())
+    store.ingest(
+        device,
+        [],
+        extended={
+            "spo2": [
+                {"timestamp": now, "spo2": 96},
+                {"timestamp": "bad", "spo2": 50},
+                None,
+                {"timestamp": -1, "spo2": 50},
+            ]
+        },
+    )
+    assert len(store.extended_latest("spo2", device_ids=[1], limit=10)) == 1
+
+
 def test_parse_date():
     today = datetime.datetime.now().date()
     assert parse_date("today") == today

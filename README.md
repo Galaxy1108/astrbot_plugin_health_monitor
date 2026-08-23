@@ -18,7 +18,25 @@
   - `health_steps` → “今天走了多少步”
   - `health_sleep` → “昨晚睡眠怎么样”（前一晚 20:00 → 当天 12:00，含深睡/浅睡/REM/清醒分钟数）
   - `health_alerts` → “最近有没有告警”
+  - `health_extended` → 扩展指标：血氧 SpO2 / 压力 / HRV(RR 间期) / 睡眠呼吸率 / 睡眠时段 / 每日汇总 / PAI / 运动记录
 - **主动告警**：心率 ≥ 阈值（默认 120）或电量 ≤ 阈值（默认 15%）时，推送到该设备**所有绑定会话**；设备无绑定会话时才使用配置的兜底目标；30 分钟去重
+- **数据类别可开关**：手机端设置页可勾选要上传的数据类别（分钟样本 / 距离与卡路里 / 电量 / 血氧 / 压力 / HRV / 呼吸率 / 睡眠时段 / 每日汇总 / PAI / 运动记录），未勾选的不上传
+
+## 支持的数据范围
+
+| 类别 | 手机端来源 | 说明 |
+|---|---|---|
+| 分钟样本 | GB 统一 SampleProvider | 每分钟一条：步数 / 心率 / 活动类型（含深睡/浅睡/REM/清醒分期与跑步/游泳/骑行等 20+ 运动类型）/ 强度 |
+| 距离与卡路里 | 同上（附加字段） | distance_cm / calories |
+| 设备电量 | GBDevice | 每次上传附带 |
+| 血氧 SpO2 | Huami/Cmf/Colmi/HybridHR/Moyoung/Garmin 表 | 分钟级 |
+| 压力 | Huami/Cmf/Colmi/Moyoung/Garmin/Wena3 表 | 分钟级 |
+| HRV | Xiaomi RR 间期 / Colmi / Garmin | 原始 RR 间期（每跳一条，限最新 2000 条/次上传） |
+| 睡眠呼吸率 | Huami / Garmin | 夜间每分钟 |
+| 睡眠时段 | Huami/Xiaomi/Cmf/Colmi/Lefun 睡眠时段表 | 入睡/醒来、各分期时长 |
+| 每日汇总 | Xiaomi 每日汇总 / 手动测量 | 步数、静息/最高/平均心率、压力均值、手动测量值 |
+| PAI | Huami | paiToday / paiTotal 等 |
+| 运动记录 | BaseActivitySummary（统一表） | 运动名称/类型/起止时间/轨迹摘要 |
 
 ## 聊天指令
 
@@ -83,12 +101,17 @@ curl -X POST "https://<你的服务器>/api/v1/plugins/extensions/astrbot_plugin
   "since": 1717999999,
   "samples": [
     {"ts": 1718000000, "kind": "ACTIVITY", "steps": 12, "hr": 76, "intensity": 5.0}
-  ]
+  ],
+  "extended": {
+    "spo2": [{"timestamp": 1718000000, "spo2": 97}],
+    "workouts": [{"timestamp": 1718000000, "name": "晨跑", "activity_kind": 16}]
+  }
 }
 ```
 
-- `kind` 为 Gadgetbridge `ActivityKind` 归一化枚举名：`ACTIVITY` / `LIGHT_SLEEP` / `DEEP_SLEEP` / `REM_SLEEP` / `AWAKE_SLEEP` / `NOT_MEASURED`
+- `kind` 为 Gadgetbridge `ActivityKind` 归一化枚举名：`ACTIVITY` / `LIGHT_SLEEP` / `DEEP_SLEEP` / `REM_SLEEP` / `AWAKE_SLEEP` / `NOT_MEASURED` 等
 - `binding_code`：手机端设置页显示的绑定码（去掉 `GB-` 前缀与横线后比对，不区分大小写）
+- `extended`（可选）：按类别分组的上传开关选中的数据；键为小写列名，`timestamp` 为 epoch 秒；服务端按 (设备, 类别, 时间戳, seq) upsert
 - 响应：`{"status": "ok", "received": N}`；错误：`{"status": "error", "message": "..."}`
 - 手机端仅在收到 `ok` 后才推进游标，失败自动重传
 
