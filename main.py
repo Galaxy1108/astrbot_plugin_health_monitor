@@ -2,9 +2,11 @@
 
 功能：
 1. Web API `POST /{PLUGIN_NAME}/upload`：接收手机端上传的分钟级样本（token 校验）。
-2. LLM 工具：health_latest / health_steps / health_sleep / health_alerts，支持
+2. 设备绑定（多用户）：用户对机器人发送 /bind <绑定码> 把设备绑到当前会话；
+   查询与告警都按"会话 → 其绑定的设备"隔离。
+3. LLM 工具：health_latest / health_steps / health_sleep / health_alerts，支持
    “现在心率多少”“今天走了多少步”“昨晚睡眠怎么样”等自然语言查询。
-3. 异常告警：心率过高 / 电量过低时，向配置的会话推送主动消息（可关闭）。
+4. 异常告警：心率过高 / 电量过低时，推送到该设备全部绑定会话（可配置兜底目标）。
 
 数据存储：AstrBot 数据目录下 health.db（SQLite），逻辑见 health_store.py。
 """
@@ -13,18 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
-from astrbot.api.event import MessageChain
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.star.star_tools import StarTools
 
-from .health_store import HealthStore
+from .health_store import HealthStore, normalize_binding_code
 from .health_tools import (
     HealthAlertsTool,
     HealthLatestTool,
@@ -48,6 +51,7 @@ class HealthMonitorPlugin(Star):
         self.token = str(self.config.get("token") or "").strip()
         self.hr_threshold = self._as_int(self.config.get("hr_high_threshold"), 120)
         self.battery_threshold = self._as_int(self.config.get("battery_low_threshold"), 15)
+        # 兜底告警目标：设备没有任何绑定会话时使用
         self.alert_target = str(self.config.get("alert_target_umo") or "").strip()
 
         self.store.hr_threshold = self.hr_threshold
@@ -96,29 +100,142 @@ class HealthMonitorPlugin(Star):
             return error_response("缺少 device 或 samples 字段")
 
         try:
-            received, alert = await asyncio.to_thread(self.store.ingest, device, samples)
+            received, alert, newly_bound_umos = await asyncio.to_thread(
+                self.store.ingest, device, samples
+            )
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
         except Exception as exc:  # noqa: BLE001
             logger.error(f"{PLUGIN_NAME} 入库失败: {exc}", exc_info=True)
             return error_response("存储失败", status_code=500)
 
+        if newly_bound_umos:
+            device_name = str(device.get("name") or device.get("address") or "设备")
+            for umo in newly_bound_umos:
+                asyncio.create_task(
+                    self._send_to(
+                        umo,
+                        f"✅ 设备绑定成功：{device_name}（{device.get('address')}）。"
+                        "现在可以直接问我健康数据了，例如“现在心率多少”。",
+                    )
+                )
+
         if alert:
             logger.info(f"{PLUGIN_NAME} 触发告警: {alert['text']}")
-            asyncio.create_task(self._push_alert(alert["text"]))
+            asyncio.create_task(self._push_alert(alert))
 
         return json_response({"status": "ok", "received": received})
 
-    async def _push_alert(self, text: str) -> None:
-        if not self.alert_target:
-            return
+    # ------------------------------------------------------------ 绑定指令
+
+    @filter.command("bind")
+    async def bind_device(self, event: AstrMessageEvent):
+        """绑定设备到当前会话。用法：/bind <绑定码>"""
+        yield event.plain_result(await self._do_bind(event))
+
+    @filter.command("绑定设备")
+    async def bind_device_zh(self, event: AstrMessageEvent):
+        """绑定设备（中文别名）。用法：绑定设备 <绑定码>"""
+        yield event.plain_result(await self._do_bind(event))
+
+    async def _do_bind(self, event: AstrMessageEvent) -> str:
         try:
-            await self.context.send_message(self.alert_target, MessageChain(chain=[Plain(text)]))
-            logger.info(f"{PLUGIN_NAME} 告警已推送至 {self.alert_target}")
+            code = normalize_binding_code(self._command_arg(event.message_str))
+            if not code:
+                return "用法：/bind <绑定码>（绑定码在手机 Gadgetbridge 的「设置 → 自动化 → Webhook 上传」页面查看，形如 GB-XXXXXX）"
+            umo = event.unified_msg_origin
+            device = await asyncio.to_thread(self.store.bind_by_code, code, umo)
+            if device:
+                return f"✅ 绑定成功：{device['name']}（{device['address']}）。现在可以问我“现在心率多少”“昨晚睡眠怎么样”了。"
+            is_new = await asyncio.to_thread(self.store.register_pending_bind, code, umo)
+            if is_new:
+                return "📡 该设备还没有上报过这个绑定码。等手机端下一次上传后会自动完成绑定，到时我会通知你。"
+            return "⏳ 你之前已经提交过这个绑定码，仍在等待设备上报。"
         except Exception as exc:  # noqa: BLE001
-            logger.error(f"{PLUGIN_NAME} 告警推送失败: {exc}")
+            logger.error(f"bind_device error: {exc}")
+            return f"绑定失败：{exc}"
+
+    @filter.command("unbind")
+    async def unbind_device(self, event: AstrMessageEvent):
+        """解除当前会话与设备的绑定。用法：/unbind <设备名或地址>"""
+        yield event.plain_result(await self._do_unbind(event))
+
+    @filter.command("解绑设备")
+    async def unbind_device_zh(self, event: AstrMessageEvent):
+        """解绑（中文别名）。用法：解绑设备 <设备名或地址>"""
+        yield event.plain_result(await self._do_unbind(event))
+
+    async def _do_unbind(self, event: AstrMessageEvent) -> str:
+        try:
+            identifier = self._command_arg(event.message_str)
+            if not identifier:
+                return "用法：/unbind <设备名或地址>（可用 /devices 查看）"
+            umo = event.unified_msg_origin
+            removed = await asyncio.to_thread(self.store.unbind, umo, identifier)
+            if removed:
+                return f"已解除绑定：{removed['name']}（{removed['address']}）。历史数据仍保留，重新绑定同码即可恢复可见。"
+            return "未找到绑定关系。先用 /devices 查看你绑定的设备。"
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"unbind_device error: {exc}")
+            return f"解绑失败：{exc}"
+
+    @filter.command("devices")
+    async def list_devices(self, event: AstrMessageEvent):
+        """列出当前会话已绑定的设备。"""
+        yield event.plain_result(await self._do_list_devices(event))
+
+    @filter.command("我的设备")
+    async def list_devices_zh(self, event: AstrMessageEvent):
+        """我的设备（中文别名）。"""
+        yield event.plain_result(await self._do_list_devices(event))
+
+    async def _do_list_devices(self, event: AstrMessageEvent) -> str:
+        try:
+            umo = event.unified_msg_origin
+            devices = await asyncio.to_thread(self.store.bound_devices, umo)
+            if not devices:
+                return "你还没有绑定任何设备。发送 /bind <绑定码> 完成绑定（绑定码在手机 Gadgetbridge 的「设置 → 自动化 → Webhook 上传」页面查看）。"
+            lines = []
+            for d in devices:
+                battery = f"{d['battery']}%" if d["battery"] is not None else "未知"
+                last = d["last_seen"] or 0
+                last_str = datetime.fromtimestamp(last).strftime("%m-%d %H:%M") if last else "从未"
+                lines.append(f"• {d['name'] or d['address']}（{d['address']}）电量 {battery}，最后上报 {last_str}")
+            return "已绑定设备：\n" + "\n".join(lines)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"list_devices error: {exc}")
+            return f"查询失败：{exc}"
+
+    # ------------------------------------------------------------- 告警推送
+
+    async def _push_alert(self, alert: dict) -> None:
+        device_id = alert.get("device_id")
+        targets: list[str] = []
+        if device_id:
+            targets = await asyncio.to_thread(self.store.umos_for_device, device_id)
+        if not targets and self.alert_target:
+            targets = [self.alert_target]
+        if not targets:
+            logger.info(f"{PLUGIN_NAME} 告警无推送目标（仅入库）: {alert['text']}")
+            return
+        for umo in targets:
+            await self._send_to(umo, alert["text"])
+
+    async def _send_to(self, umo: str, text: str) -> None:
+        try:
+            await self.context.send_message(umo, MessageChain(chain=[Plain(text)]))
+            logger.info(f"{PLUGIN_NAME} 消息已推送至 {umo}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"{PLUGIN_NAME} 推送失败至 {umo}: {exc}")
 
     # ---------------------------------------------------------------- 工具
+
+    @staticmethod
+    def _command_arg(message_str: str) -> str:
+        """去掉指令前缀，取剩余参数。"""
+        text = (message_str or "").strip()
+        parts = text.split(maxsplit=1)
+        return parts[1].strip() if len(parts) > 1 else ""
 
     @staticmethod
     def _as_int(value: Any, default: int) -> int:
