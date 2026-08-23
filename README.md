@@ -1,18 +1,19 @@
 # astrbot_plugin_health_monitor
 
-健康数据监控插件：接收改装版 [Gadgetbridge](https://gadgetbridge.org) 手机端通过 HTTP 上传的健康数据（步数 / 心率 / 睡眠 / 电量），存入 SQLite；注册 LLM 工具支持自然语言查询，并在心率过高、电量过低时推送主动告警。
+健康数据监控插件：接收改装版 [Gadgetbridge](https://gadgetbridge.org) 手机端通过 HTTP 上传的健康数据（步数 / 心率 / 睡眠 / 电量等），存入 SQLite；注册 LLM 工具支持自然语言查询，并在心率过高、电量过低时推送主动告警。
 
-**多用户设计**：数据按"会话 ↔ 设备绑定"隔离 —— 用户先用绑定码把设备绑到自己的会话，之后所有查询与告警都只针对该会话绑定的设备；一个设备可被多个会话绑定（如家庭群 + 私聊），一个会话可绑定多个设备。
+**安全模型（无令牌）**：不需要 API Key / 令牌。插件自带独立上传服务（默认 `127.0.0.1:8765`），**绑定码即门禁** —— 设备未被任何会话绑定（配对）前，上传的数据一律不落库，返回 `pending_bind`，手机端进入"等待配对"；只有对机器人发送 `/bind <绑定码>` 完成配对后才开始接收数据。
+
+**多用户**：数据按"会话 ↔ 设备绑定"隔离 —— 一个设备可被多个会话绑定（如家庭群 + 私聊），一个会话可绑定多个设备。
 
 ## 功能
 
-- **Web API 接收端点**：`POST /api/v1/plugins/extensions/astrbot_plugin_health_monitor/upload`
-  - AstrBot 层鉴权：需要带 `plugin` 作用域的 [API Key](https://github.com/AstrBotDevs/AstrBot)（`Authorization: Bearer <key>`）
-  - 插件层二次校验：配置 `token` 后，请求必须携带 `X-Health-Token` 头
+- **独立上传端点**：`POST http://127.0.0.1:8765/upload`（经 Cloudflare Tunnel 暴露公网，见下）
+  - 无需任何令牌；未配对设备数据不落库（`{"status":"pending_bind"}`）
 - **设备绑定（多用户）**：绑定码在手机 Gadgetbridge「设置 → 自动化 → Webhook 上传」页面显示（形如 `GB-XXXXXX`），随每次上传上报；聊天里发 `/bind GB-XXXXXX` 即可绑定
 - **数据存储**：`<AstrBot 数据目录>/astrbot_plugin_health_monitor/health.db`（SQLite）
   - `devices` / `samples`（按 设备+时间戳 upsert 去重）/ `alerts`
-  - `bindings`（会话↔设备多对多）/ `pending_binds`（待绑定）
+  - `bindings`（会话↔设备多对多）/ `pending_binds`（待绑定）/ `extended`（扩展指标）
 - **LLM 工具**（自然语言直接问，仅返回当前会话已绑定设备的数据）：
   - `health_latest` → “现在心率多少”“电量多少”
   - `health_steps` → “今天走了多少步”
@@ -20,7 +21,26 @@
   - `health_alerts` → “最近有没有告警”
   - `health_extended` → 扩展指标：血氧 SpO2 / 压力 / HRV(RR 间期) / 睡眠呼吸率 / 睡眠时段 / 每日汇总 / PAI / 运动记录
 - **主动告警**：心率 ≥ 阈值（默认 120）或电量 ≤ 阈值（默认 15%）时，推送到该设备**所有绑定会话**；设备无绑定会话时才使用配置的兜底目标；30 分钟去重
-- **数据类别可开关**：手机端设置页可勾选要上传的数据类别（分钟样本 / 距离与卡路里 / 电量 / 血氧 / 压力 / HRV / 呼吸率 / 睡眠时段 / 每日汇总 / PAI / 运动记录），未勾选的不上传
+- **数据类别可开关**：手机端设置页可勾选要上传的数据类别，未勾选的不上传
+
+## Cloudflare Tunnel 暴露（推荐，无需开放入站端口）
+
+服务器不开公网入站端口，用 cloudflared 出站隧道转发：
+
+```yaml
+# cloudflared config.yml
+tunnel: <你的 tunnel id>
+credentials-file: /path/to/credentials.json
+ingress:
+  - hostname: astrbot.example.com      # AstrBot 管理面板
+    service: http://localhost:6185
+  - hostname: health.example.com       # 健康数据上传
+    service: http://localhost:8765
+  - service: http_status:404
+```
+
+手机端「服务器地址」填 `health.example.com`（协议和 `/upload` 路径自动补全）。
+注意：**不要在 Cloudflare 开启 Under Attack Mode / Bot Fight Mode**，会拦截 App 的非浏览器请求。
 
 ## 支持的数据范围
 
@@ -59,24 +79,24 @@
 
 | 配置项 | 说明 | 默认 |
 |---|---|---|
-| `token` | 上传令牌（`X-Health-Token`）；留空关闭二次校验 | 空 |
+| `server_host` | 独立上传服务监听地址 | `127.0.0.1` |
+| `server_port` | 独立上传服务端口 | 8765 |
 | `hr_high_threshold` | 心率过高告警阈值（次/分） | 120 |
 | `battery_low_threshold` | 电量过低告警阈值（%） | 15 |
 | `alert_target_umo` | 兜底告警目标；设备有绑定会话时优先推给绑定会话 | 空 |
 
+> 无需任何令牌/API Key。若要让局域网或公网直连 8765 端口，把 `server_host` 改为 `0.0.0.0`（自行确保网络安全）。
+
 ## 验证
 
-安装并配置后，用 curl 模拟一次上传：
+安装并配置后，用 curl 模拟一次上传（在服务器本机即可）：
 
 ```bash
-# 1) 鉴权连通性测试（GET）
-curl -i "https://<你的服务器>/api/v1/plugins/extensions/astrbot_plugin_health_monitor/ping" \
-  -H "Authorization: Bearer <AstrBot API Key>"
+# 1) 连通性测试
+curl -i "http://127.0.0.1:8765/ping"
 
-# 2) 上传一条测试数据（binding_code 需与手机端设置页显示的绑定码一致）
-curl -X POST "https://<你的服务器>/api/v1/plugins/extensions/astrbot_plugin_health_monitor/upload" \
-  -H "Authorization: Bearer <AstrBot API Key>" \
-  -H "X-Health-Token: <插件 token，若已配置>" \
+# 2) 上传一条测试数据（未绑定会返回 pending_bind，符合预期）
+curl -X POST "http://127.0.0.1:8765/upload" \
   -H "Content-Type: application/json" \
   -d '{
     "device": {"address": "AA:BB:CC:DD:EE:FF", "name": "测试手表", "type": "XIAOMI", "battery": 88, "binding_code": "ABC123"},
@@ -87,11 +107,12 @@ curl -X POST "https://<你的服务器>/api/v1/plugins/extensions/astrbot_plugin
   }'
 ```
 
-期望返回 `{"status": "ok", "received": 2}`。然后：
+流程验证：
 
-1. 对机器人发送 `/bind ABC123`（或用手机设置页显示的完整码 `GB-ABC123`）；
-2. 等下一次上传（或重新 curl 一次）→ 收到"设备绑定成功"通知；
-3. 对机器人说“现在心率多少”“昨天睡眠怎么样”验证查询。
+1. 首次上传应返回 `{"status": "pending_bind", ...}`（设备未配对，数据不落库）；
+2. 对机器人发送 `/bind ABC123`（或用手机设置页显示的完整码 `GB-ABC123`）；
+3. 再次 curl → 返回 `{"status": "ok", "received": 2}`，数据入库；
+4. 对机器人说“现在心率多少”“昨天睡眠怎么样”验证查询。
 
 ## 上传数据契约（与手机端约定）
 
@@ -112,8 +133,11 @@ curl -X POST "https://<你的服务器>/api/v1/plugins/extensions/astrbot_plugin
 - `kind` 为 Gadgetbridge `ActivityKind` 归一化枚举名：`ACTIVITY` / `LIGHT_SLEEP` / `DEEP_SLEEP` / `REM_SLEEP` / `AWAKE_SLEEP` / `NOT_MEASURED` 等
 - `binding_code`：手机端设置页显示的绑定码（去掉 `GB-` 前缀与横线后比对，不区分大小写）
 - `extended`（可选）：按类别分组的上传开关选中的数据；键为小写列名，`timestamp` 为 epoch 秒；服务端按 (设备, 类别, 时间戳, seq) upsert
-- 响应：`{"status": "ok", "received": N}`；错误：`{"status": "error", "message": "..."}`
-- 手机端仅在收到 `ok` 后才推进游标，失败自动重传
+- 响应：
+  - `{"status": "ok", "received": N}` —— 数据已入库
+  - `{"status": "pending_bind", "message": "..."}` —— 设备未配对，数据未落库（手机端进入"等待配对"）
+  - `{"status": "error", "message": "..."}` —— 请求错误
+- 手机端仅在收到 `ok` 后才推进游标，失败/待配对不推进（配对完成后自动恢复上传）
 
 ## 开发
 

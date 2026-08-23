@@ -1,9 +1,15 @@
 {
-  "token": {
-    "description": "上传令牌（X-Health-Token），手机端需携带；留空则关闭二次校验",
+  "server_host": {
+    "description": "独立上传服务监听地址",
     "type": "string",
-    "default": "",
-    "hint": "建议设置一个随机长字符串，并在手机端 Gadgetbridge Webhook 设置中填入同一个值。"
+    "default": "127.0.0.1",
+    "hint": "Cloudflare Tunnel 转发到本机时保持默认 127.0.0.1 即可；若希望局域网/公网直连此端口，可改为 0.0.0.0（注意：此服务无令牌鉴权，直连公网请自行确保安全）。"
+  },
+  "server_port": {
+    "description": "独立上传服务端口",
+    "type": "int",
+    "default": 8765,
+    "hint": "手机端填的根地址需与此对应（经 Cloudflare Tunnel 转发到此端口）。"
   },
   "hr_high_threshold": {
     "description": "心率过高告警阈值（次/分）",

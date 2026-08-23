@@ -28,17 +28,54 @@ def _device(address: str, **kw) -> dict:
     return d
 
 
+def _bind_device(store: HealthStore, address: str, code: str = "TEST11", umo: str = "umo:test") -> None:
+    """注册设备并绑定到测试会话（配对门禁要求先绑定才能收数据）。"""
+    store.ingest(_device(address, binding_code=code), [])
+    found = store.bind_by_code(code, umo)
+    assert found is not None, f"bind {address} failed"
+
+
+# ---------------------------------------------------------------- 配对门禁
+
+def test_pending_bind_gate_blocks_data(store):
+    """未绑定设备上传 → 不落库、返回 pending_bind。"""
+    device = _device("AA:BB:CC", binding_code="GATE11")
+    received, alert, bound, pending = store.ingest(device, [_sample(1000, steps=5, hr=70)])
+    assert received == 0
+    assert alert is None
+    assert bound == []
+    assert pending is True
+    # 数据未落库
+    assert store.steps_on(datetime.datetime.now().date()) == 0
+    assert store.latest_hr(minutes=60) is None
+    # 但设备行已登记，绑定码可立即生效
+    assert store.bind_by_code("GATE11", "umo:owner") is not None
+
+
+def test_bound_device_receives_data(store):
+    _bind_device(store, "AA:BB:CC", code="BND11")
+    received, alert, bound, pending = store.ingest(_device("AA:BB:CC"), [_sample(1000, steps=5, hr=70)])
+    assert received == 1
+    assert alert is None
+    assert bound == []
+    assert pending is False
+    assert store.latest_hr(minutes=5) is None  # 时间戳太旧
+    assert len(store.bound_devices("umo:test")) == 1
+
+
 # ---------------------------------------------------------------- 基础写入
 
 def test_ingest_and_dedupe(store):
+    _bind_device(store, "AA:BB:CC")
     device = _device("AA:BB:CC", battery=80)
-    received, alert, bound = store.ingest(device, [_sample(1000, steps=5, hr=70), _sample(1060, steps=6, hr=75)])
+    received, alert, bound, pending = store.ingest(device, [_sample(1000, steps=5, hr=70), _sample(1060, steps=6, hr=75)])
     assert received == 2
     assert alert is None
     assert bound == []
+    assert pending is False
 
     # 相同 (device, ts) 再传 → 覆盖，不新增
-    received2, _, _ = store.ingest(device, [_sample(1000, steps=99, hr=71)])
+    received2, _, _, _ = store.ingest(device, [_sample(1000, steps=99, hr=71)])
     assert received2 == 1
     assert store.latest_hr(minutes=5) is None  # 时间戳太旧
 
@@ -49,12 +86,13 @@ def test_missing_address_rejected(store):
 
 
 def test_bad_samples_skipped(store):
-    device = _device("AA:BB:CC", battery=50)
-    received, _, _ = store.ingest(device, [_sample(1000), {"ts": "not-a-number"}, None, {"ts": -5}])
+    _bind_device(store, "AA:BB:CC")
+    received, _, _, _ = store.ingest(_device("AA:BB:CC", battery=50), [_sample(1000), {"ts": "not-a-number"}, None, {"ts": -5}])
     assert received == 1
 
 
 def test_steps_and_sleep_queries(store):
+    _bind_device(store, "AA:BB:CC")
     now = datetime.datetime.now()
     today = now.date()
     midnight = datetime.datetime(today.year, today.month, today.day)
@@ -77,26 +115,29 @@ def test_steps_and_sleep_queries(store):
 
 
 def test_hr_alerts_dedupe(store):
+    _bind_device(store, "AA:BB:CC")
     device = _device("AA:BB:CC")
     now = int(datetime.datetime.now().timestamp())
 
-    _, alert1, _ = store.ingest(device, [_sample(now - 60, hr=150)])
+    _, alert1, _, _ = store.ingest(device, [_sample(now - 60, hr=150)])
     assert alert1 is not None and alert1["type"] == "high_hr"
 
     # 30 分钟内同一类型不重复告警
-    _, alert2, _ = store.ingest(device, [_sample(now - 30, hr=160)])
+    _, alert2, _, _ = store.ingest(device, [_sample(now - 30, hr=160)])
     assert alert2 is None
 
     # 低阈值内的心率不告警
-    _, alert3, _ = store.ingest(device, [_sample(now, hr=100)])
+    _, alert3, _, _ = store.ingest(device, [_sample(now, hr=100)])
     assert alert3 is None
 
 
 def test_battery_alerts(store):
-    _, alert, _ = store.ingest(_device("AA:BB:CC", battery=10), [])
+    _bind_device(store, "AA:BB:CC")
+    _, alert, _, _ = store.ingest(_device("AA:BB:CC", battery=10), [])
     assert alert is not None and alert["type"] == "low_battery"
 
-    _, alert2, _ = store.ingest(_device("DD:EE:FF", battery=90), [])
+    _bind_device(store, "DD:EE:FF", code="BATT2")
+    _, alert2, _, _ = store.ingest(_device("DD:EE:FF", battery=90), [])
     assert alert2 is None
 
 
@@ -116,24 +157,25 @@ def test_pending_bind_then_auto_bind_on_upload(store):
     assert store.register_pending_bind("ABC123", "umo:group1") is True
     assert store.register_pending_bind("ABC123", "umo:group1") is False  # 幂等
 
-    # 设备第一次上报（带同码）→ 自动绑定，返回新绑定会话
+    # 设备第一次上报（带同码）→ 自动绑定 + 本次数据入库
     device = _device("AA:BB:CC", binding_code="GB-ABC123")
-    received, _, newly_bound = store.ingest(device, [_sample(1000)])
+    received, _, newly_bound, pending = store.ingest(device, [_sample(1000)])
     assert received == 1
     assert newly_bound == ["umo:group1"]
+    assert pending is False
 
     bound = store.bound_devices("umo:group1")
     assert len(bound) == 1
     assert bound[0]["address"] == "AA:BB:CC"
 
     # 再次上报不再触发绑定
-    _, _, newly_bound2 = store.ingest(device, [_sample(1060)])
+    _, _, newly_bound2, _ = store.ingest(device, [_sample(1060)])
     assert newly_bound2 == []
 
 
 def test_direct_bind_when_device_known(store):
     device = _device("AA:BB:CC", binding_code="XYZ789")
-    store.ingest(device, [_sample(1000)])
+    store.ingest(device, [_sample(1000)])  # 未绑定 → 门禁拦截，但设备行已登记
 
     found = store.bind_by_code("xyz-789", "umo:private1")  # 归一化：去横线、大写
     assert found is not None and found["address"] == "AA:BB:CC"
@@ -144,55 +186,54 @@ def test_direct_bind_when_device_known(store):
 
 
 def test_multi_session_same_device(store):
-    device = _device("AA:BB:CC", binding_code="MULTI1")
-    store.ingest(device, [_sample(1000)])
-
+    _bind_device(store, "AA:BB:CC", code="MULTI1")
     store.bind_by_code("MULTI1", "umo:family-group")
     store.bind_by_code("MULTI1", "umo:dad-private")
 
     umos = store.umos_for_device(1)
-    assert sorted(umos) == sorted(["umo:family-group", "umo:dad-private"])
-    # 两个会话都能看到该设备
+    assert sorted(umos) == sorted(["umo:test", "umo:family-group", "umo:dad-private"])
+    # 所有会话都能看到该设备
     assert len(store.bound_devices("umo:family-group")) == 1
     assert len(store.bound_devices("umo:dad-private")) == 1
+    assert len(store.bound_devices("umo:test")) == 1
 
 
 def test_unbind_only_removes_session(store):
-    device = _device("AA:BB:CC", binding_code="UNBND1")
-    store.ingest(device, [_sample(1000)])
-    store.bind_by_code("UNBND1", "umo:a")
+    _bind_device(store, "AA:BB:CC", code="UNBND1")
     store.bind_by_code("UNBND1", "umo:b")
 
-    removed = store.unbind("umo:a", "AA:BB:CC")
+    removed = store.unbind("umo:test", "AA:BB:CC")
     assert removed is not None and removed["address"] == "AA:BB:CC"
-    assert len(store.bound_devices("umo:a")) == 0
+    assert len(store.bound_devices("umo:test")) == 0
     assert len(store.bound_devices("umo:b")) == 1  # b 不受影响
 
     # 解绑不存在的绑定 → None
-    assert store.unbind("umo:a", "AA:BB:CC") is None
+    assert store.unbind("umo:test", "AA:BB:CC") is None
 
 
 def test_query_isolation_by_binding(store):
     now = int(datetime.datetime.now().timestamp())
-    dev_a = _device("AA:BB:CC", binding_code="AAAAAA")
-    dev_b = _device("DD:EE:FF", binding_code="BBBBBB")
-    store.ingest(dev_a, [_sample(now - 60, steps=100, hr=80)])
-    store.ingest(dev_b, [_sample(now - 30, steps=500, hr=95)])
+    _bind_device(store, "AA:BB:CC", code="AAAAAA")
+    _bind_device(store, "DD:EE:FF", code="BBBBBB", umo="umo:other")
+    store.ingest(_device("AA:BB:CC"), [_sample(now - 60, steps=100, hr=80)])
+    store.ingest(_device("DD:EE:FF"), [_sample(now - 30, steps=500, hr=95)])
 
     # 未绑定时：查不到任何数据
     assert store.device_ids_for_umo("umo:stranger") == []
     assert store.latest_hr(minutes=10, device_ids=[]) is None
 
-    store.bind_by_code("AAAAAA", "umo:owner")
-    ids = store.device_ids_for_umo("umo:owner")
+    ids = store.device_ids_for_umo("umo:test")
     assert len(ids) == 1
 
     latest = store.latest_hr(minutes=10, device_ids=ids)
-    assert latest is not None and latest["hr"] == 80  # 只看得到 A
+    assert latest is not None and latest["hr"] == 80  # owner 只看得到 A
     assert store.steps_on(datetime.datetime.now().date(), device_ids=ids) == 100
 
-    # B 的心率对 owner 不可见
-    assert store.latest_hr(minutes=10, device_ids=store.device_ids_for_umo("umo:other")) is None
+    # other 只能看到 B
+    other_latest = store.latest_hr(minutes=10, device_ids=store.device_ids_for_umo("umo:other"))
+    assert other_latest is not None and other_latest["hr"] == 95
+    # A 的心率对 other 不可见（B 已绑 other，A 只绑 test）
+    assert len(store.device_ids_for_umo("umo:test")) == 1
 
 
 def test_ingest_keeps_first_binding_code(store):
@@ -207,11 +248,10 @@ def test_ingest_keeps_first_binding_code(store):
 # ---------------------------------------------------------------- 扩展指标
 
 def test_extended_ingest_and_query(store):
-    device = _device("AA:BB:CC", binding_code="EXTND1")
-    store.ingest(device, [_sample(1000)])
+    _bind_device(store, "AA:BB:CC", code="EXTND1")
     now = int(datetime.datetime.now().timestamp())
     store.ingest(
-        device,
+        _device("AA:BB:CC"),
         [_sample(1060)],
         extended={
             "spo2": [
@@ -226,7 +266,7 @@ def test_extended_ingest_and_query(store):
         },
     )
     # 同 (device, category, ts, seq) 覆盖更新
-    store.ingest(device, [], extended={"spo2": [{"timestamp": now - 120, "spo2": 99}]})
+    store.ingest(_device("AA:BB:CC"), [], extended={"spo2": [{"timestamp": now - 120, "spo2": 99}]})
 
     latest = store.extended_latest("spo2", device_ids=[1], limit=2)
     assert len(latest) == 2
@@ -249,10 +289,10 @@ def test_extended_ingest_and_query(store):
 
 
 def test_extended_invalid_rows_skipped(store):
-    device = _device("AA:BB:CC")
+    _bind_device(store, "AA:BB:CC")
     now = int(datetime.datetime.now().timestamp())
     store.ingest(
-        device,
+        _device("AA:BB:CC"),
         [],
         extended={
             "spo2": [
@@ -264,6 +304,17 @@ def test_extended_invalid_rows_skipped(store):
         },
     )
     assert len(store.extended_latest("spo2", device_ids=[1], limit=10)) == 1
+
+
+def test_extended_blocked_when_unbound(store):
+    """未绑定设备的扩展数据同样不落库。"""
+    now = int(datetime.datetime.now().timestamp())
+    store.ingest(
+        _device("AA:BB:CC", binding_code="EXTG1"),
+        [_sample(1000)],
+        extended={"spo2": [{"timestamp": now, "spo2": 96}]},
+    )
+    assert store.extended_latest("spo2", device_ids=[1], limit=10) == []
 
 
 def test_parse_date():

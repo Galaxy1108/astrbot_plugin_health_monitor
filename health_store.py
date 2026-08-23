@@ -134,10 +134,14 @@ class HealthStore:
         device: dict[str, Any],
         samples: list[dict[str, Any]],
         extended: dict[str, Any] | None = None,
-    ) -> tuple[int, dict | None, list[str]]:
+    ) -> tuple[int, dict | None, list[str], bool]:
         """写入一批样本（按 (device, ts) upsert 去重）与扩展指标。
 
-        返回 (接受条数, 告警或 None, 本次上传刚完成绑定的会话 umo 列表)。
+        返回 (接受条数, 告警或 None, 本次上传刚完成绑定的会话 umo 列表, 是否待配对)。
+
+        配对门禁：设备尚未被任何会话绑定时（bindings 表无记录），只登记设备与
+        绑定码，样本/扩展数据一律不落库，pending_bind=True（手机端进入"等待配对"）。
+        设备行始终更新（binding_code / battery / last_seen），以便 /bind 立即生效。
         device: {"address", "name", "type", "battery"(可选), "binding_code"(可选)}
         samples: [{"ts", "kind", "steps", "hr", "intensity"}, ...]
         extended: {"spo2": [{"timestamp", "spo2", ...}, ...], ...}（可选）
@@ -152,6 +156,59 @@ class HealthStore:
         battery = self._clean_int(device.get("battery"))
         binding_code = normalize_binding_code(device.get("binding_code"))
         now = int(datetime.now().timestamp())
+
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO devices (address, name, type, battery, last_seen, binding_code)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(address) DO UPDATE SET"
+                " name=excluded.name, type=excluded.type,"
+                " battery=COALESCE(excluded.battery, devices.battery),"
+                " last_seen=excluded.last_seen,"
+                " binding_code=COALESCE(excluded.binding_code, devices.binding_code)",
+                (address, str(device.get("name") or "")[:128], str(device.get("type") or "")[:64], battery, now, binding_code),
+            )
+            row = self._conn.execute("SELECT id FROM devices WHERE address=?", (address,)).fetchone()
+            device_id = int(row["id"])
+
+            bound_row = self._conn.execute(
+                "SELECT 1 FROM bindings WHERE device_id=?", (device_id,)
+            ).fetchone()
+
+            # 解析待绑定：把本设备绑到所有 pending 该 code 的会话（在门禁判定之前，
+            # 这样"刚完成绑定"的首次上传即可正常入库）
+            newly_bound_umos: list[str] = []
+            if binding_code:
+                pending = self._conn.execute(
+                    "SELECT umo FROM pending_binds WHERE code=?", (binding_code,)
+                ).fetchall()
+                if pending:
+                    for p in pending:
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO bindings (device_id, umo, created_at) VALUES (?, ?, ?)",
+                            (device_id, p["umo"], now),
+                        )
+                    self._conn.execute("DELETE FROM pending_binds WHERE code=?", (binding_code,))
+                    newly_bound_umos = [p["umo"] for p in pending]
+
+            pending_bind = bound_row is None and not newly_bound_umos
+
+            received = 0
+            if not pending_bind:
+                received = self._ingest_samples_locked(device_id, samples)
+                self._ingest_extended_locked(device_id, extended)
+            self._conn.commit()
+
+        if pending_bind:
+            return 0, None, newly_bound_umos, True
+
+        alert = self._check_alerts(device_id, address, battery, samples)
+        return received, alert, newly_bound_umos, False
+
+    # ------------------------------------------------------------ 绑定机制
+
+    def _ingest_samples_locked(self, device_id: int, samples: list[dict[str, Any]]) -> int:
+        """写入分钟样本（调用方需持有锁），返回接受的条数。"""
         clean_samples: list[tuple] = []
         for s in samples:
             if not isinstance(s, dict):
@@ -168,21 +225,7 @@ class HealthStore:
                     self._clean_float(s.get("intensity")),
                 )
             )
-
-        with self._lock:
-            self._conn.execute(
-                "INSERT INTO devices (address, name, type, battery, last_seen, binding_code)"
-                " VALUES (?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(address) DO UPDATE SET"
-                " name=excluded.name, type=excluded.type,"
-                " battery=COALESCE(excluded.battery, devices.battery),"
-                " last_seen=excluded.last_seen,"
-                " binding_code=COALESCE(excluded.binding_code, devices.binding_code)",
-                (address, str(device.get("name") or "")[:128], str(device.get("type") or "")[:64], battery, now, binding_code),
-            )
-            row = self._conn.execute("SELECT id FROM devices WHERE address=?", (address,)).fetchone()
-            device_id = int(row["id"])
-
+        if clean_samples:
             self._conn.executemany(
                 "INSERT INTO samples (device_id, ts, kind, steps, hr, intensity)"
                 " VALUES (?, ?, ?, ?, ?, ?)"
@@ -191,63 +234,44 @@ class HealthStore:
                 " hr=excluded.hr, intensity=excluded.intensity",
                 [(device_id, *s) for s in clean_samples],
             )
+        return len(clean_samples)
 
-            # 解析待绑定：把本设备绑到所有 pending 该 code 的会话
-            newly_bound_umos: list[str] = []
-            if binding_code:
-                pending = self._conn.execute(
-                    "SELECT umo FROM pending_binds WHERE code=?", (binding_code,)
-                ).fetchall()
-                if pending:
-                    for p in pending:
-                        self._conn.execute(
-                            "INSERT OR IGNORE INTO bindings (device_id, umo, created_at) VALUES (?, ?, ?)",
-                            (device_id, p["umo"], now),
-                        )
-                    self._conn.execute("DELETE FROM pending_binds WHERE code=?", (binding_code,))
-                    newly_bound_umos = [p["umo"] for p in pending]
-
-            # 扩展指标（血氧/压力/HRV/...），按 (device, category, ts, seq) upsert
-            if isinstance(extended, dict):
-                ext_rows: list[tuple] = []
-                for category, rows in extended.items():
-                    if not isinstance(rows, list):
-                        continue
-                    for r in rows[:MAX_EXTENDED_PER_CATEGORY]:
-                        if not isinstance(r, dict):
-                            continue
-                        ts = self._clean_int(r.get("timestamp"))
-                        if ts is None or ts <= 0:
-                            continue
-                        seq = self._clean_int(r.get("seq")) or 0
-                        payload = {
-                            k: v
-                            for k, v in r.items()
-                            if k not in ("timestamp", "seq", "device_id", "user_id")
-                        }
-                        ext_rows.append(
-                            (
-                                device_id,
-                                str(category)[:64],
-                                ts,
-                                seq,
-                                json.dumps(payload, ensure_ascii=False),
-                            )
-                        )
-                if ext_rows:
-                    self._conn.executemany(
-                        "INSERT INTO extended (device_id, table_name, ts, seq, payload)"
-                        " VALUES (?, ?, ?, ?, ?)"
-                        " ON CONFLICT(device_id, table_name, ts, seq) DO UPDATE SET payload=excluded.payload",
-                        ext_rows,
+    def _ingest_extended_locked(self, device_id: int, extended: dict[str, Any] | None) -> None:
+        """写入扩展指标（调用方需持有锁）。"""
+        if not isinstance(extended, dict):
+            return
+        ext_rows: list[tuple] = []
+        for category, rows in extended.items():
+            if not isinstance(rows, list):
+                continue
+            for r in rows[:MAX_EXTENDED_PER_CATEGORY]:
+                if not isinstance(r, dict):
+                    continue
+                ts = self._clean_int(r.get("timestamp"))
+                if ts is None or ts <= 0:
+                    continue
+                seq = self._clean_int(r.get("seq")) or 0
+                payload = {
+                    k: v
+                    for k, v in r.items()
+                    if k not in ("timestamp", "seq", "device_id", "user_id")
+                }
+                ext_rows.append(
+                    (
+                        device_id,
+                        str(category)[:64],
+                        ts,
+                        seq,
+                        json.dumps(payload, ensure_ascii=False),
                     )
-
-            self._conn.commit()
-
-        alert = self._check_alerts(device_id, address, battery, clean_samples)
-        return len(clean_samples), alert, newly_bound_umos
-
-    # ------------------------------------------------------------ 绑定机制
+                )
+        if ext_rows:
+            self._conn.executemany(
+                "INSERT INTO extended (device_id, table_name, ts, seq, payload)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(device_id, table_name, ts, seq) DO UPDATE SET payload=excluded.payload",
+                ext_rows,
+            )
 
     def register_pending_bind(self, code: str, umo: str) -> bool:
         """登记待绑定；返回是否为新登记（True=等待设备上报，False=已登记过）。"""
@@ -343,12 +367,19 @@ class HealthStore:
         device_id: int,
         address: str,
         battery: int | None,
-        samples: list[tuple],
+        samples: list[dict[str, Any]],
     ) -> dict | None:
         """按阈值检查本批数据，返回（若有）一条告警。"""
         now = int(datetime.now().timestamp())
 
-        hr_values = [(ts, hr) for ts, _, _, hr, _ in samples if hr is not None and hr > 0]
+        hr_values: list[tuple[int, int]] = []
+        for s in samples:
+            if not isinstance(s, dict):
+                continue
+            hr = self._clean_int(s.get("hr"))
+            ts = self._clean_int(s.get("ts"))
+            if hr is not None and hr > 0 and ts is not None:
+                hr_values.append((ts, hr))
         if hr_values:
             max_hr = max(hr for _, hr in hr_values)
             if max_hr >= self.hr_threshold:

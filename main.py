@@ -1,11 +1,13 @@
 """健康数据监控插件：接收 Gadgetbridge Webhook 上传的健康数据并入库。
 
 功能：
-1. Web API `POST /{PLUGIN_NAME}/upload`：接收手机端上传的分钟级样本（token 校验）。
+1. 独立上传端点：插件自带 HTTP 服务（默认 127.0.0.1:8765，经 Cloudflare Tunnel
+   暴露公网），不需要 AstrBot API Key / 令牌 —— 安全模型是"绑定码即门禁"：
+   设备未配对（绑定）前数据一律不落库，返回 pending_bind，手机端进入"等待配对"。
 2. 设备绑定（多用户）：用户对机器人发送 /bind <绑定码> 把设备绑到当前会话；
    查询与告警都按"会话 → 其绑定的设备"隔离。
-3. LLM 工具：health_latest / health_steps / health_sleep / health_alerts，支持
-   “现在心率多少”“今天走了多少步”“昨晚睡眠怎么样”等自然语言查询。
+3. LLM 工具：health_latest / health_steps / health_sleep / health_alerts /
+   health_extended，支持自然语言查询。
 4. 异常告警：心率过高 / 电量过低时，推送到该设备全部绑定会话（可配置兜底目标）。
 
 数据存储：AstrBot 数据目录下 health.db（SQLite），逻辑见 health_store.py。
@@ -14,7 +16,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from .health_tools import (
     HealthSleepTool,
     HealthStepsTool,
 )
+from .webhook_server import WebhookHttpServer
 
 PLUGIN_NAME = "astrbot_plugin_health_monitor"
 
@@ -48,27 +50,28 @@ class HealthMonitorPlugin(Star):
         data_dir.mkdir(parents=True, exist_ok=True)
         self.store = HealthStore(data_dir / "health.db")
 
-        # 可选二次校验 token（在 AstrBot API Key 之外再加一层）
-        self.token = str(self.config.get("token") or "").strip()
         self.hr_threshold = self._as_int(self.config.get("hr_high_threshold"), 120)
         self.battery_threshold = self._as_int(self.config.get("battery_low_threshold"), 15)
         # 兜底告警目标：设备没有任何绑定会话时使用
         self.alert_target = str(self.config.get("alert_target_umo") or "").strip()
+        self.server_host = str(self.config.get("server_host") or "127.0.0.1").strip() or "127.0.0.1"
+        self.server_port = self._as_int(self.config.get("server_port"), 8765)
 
         self.store.hr_threshold = self.hr_threshold
         self.store.battery_threshold = self.battery_threshold
 
+        # AstrBot 路由（兼容保留；主通道是独立端口的 WebhookHttpServer）
         context.register_web_api(
             f"/{PLUGIN_NAME}/upload",
             self._api_upload,
             ["POST"],
-            "接收健康数据上传",
+            "接收健康数据上传（AstrBot 路由，兼容）",
         )
         context.register_web_api(
             f"/{PLUGIN_NAME}/ping",
             self._api_ping,
             ["GET"],
-            "健康检查（鉴权测试）",
+            "健康检查",
         )
 
         context.add_llm_tools(
@@ -79,7 +82,27 @@ class HealthMonitorPlugin(Star):
             HealthExtendedTool(store=self.store),
         )
 
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._server: WebhookHttpServer | None = None
+
         logger.info(f"{PLUGIN_NAME} 已加载：数据目录 {data_dir}")
+
+    async def initialize(self) -> None:
+        """启动独立上传服务（主事件循环就绪后）。"""
+        self._loop = asyncio.get_running_loop()
+        self._server = WebhookHttpServer(
+            self.store,
+            host=self.server_host,
+            port=self.server_port,
+            notify_coro=self._schedule_send,
+            notify_alert_coro=self._schedule_alert,
+        )
+        self._server.start()
+
+    async def terminate(self) -> None:
+        if self._server is not None:
+            self._server.stop()
+            self._server = None
 
     # ------------------------------------------------------------- Web API
 
@@ -87,11 +110,7 @@ class HealthMonitorPlugin(Star):
         return json_response({"status": "ok", "plugin": PLUGIN_NAME})
 
     async def _api_upload(self) -> Any:
-        if self.token:
-            header_token = request.headers.get("x-health-token") or ""
-            if not hmac.compare_digest(header_token, self.token):
-                return error_response("invalid token", status_code=403)
-
+        """AstrBot 路由版上传（与独立端口同一套门禁逻辑）。"""
         body = await request.json(default=None)
         if not isinstance(body, dict):
             return error_response("请求体必须是 JSON 对象")
@@ -105,7 +124,7 @@ class HealthMonitorPlugin(Star):
             return error_response("extended 必须是对象")
 
         try:
-            received, alert, newly_bound_umos = await asyncio.to_thread(
+            received, alert, newly_bound_umos, pending_bind = await asyncio.to_thread(
                 self.store.ingest, device, samples, extended
             )
         except ValueError as exc:
@@ -113,6 +132,14 @@ class HealthMonitorPlugin(Star):
         except Exception as exc:  # noqa: BLE001
             logger.error(f"{PLUGIN_NAME} 入库失败: {exc}", exc_info=True)
             return error_response("存储失败", status_code=500)
+
+        if pending_bind:
+            return json_response(
+                {
+                    "status": "pending_bind",
+                    "message": f"设备未绑定，等待配对：请对机器人发送 /bind {device.get('binding_code')}",
+                }
+            )
 
         if newly_bound_umos:
             device_name = str(device.get("name") or device.get("address") or "设备")
@@ -211,7 +238,26 @@ class HealthMonitorPlugin(Star):
             logger.error(f"list_devices error: {exc}")
             return f"查询失败：{exc}"
 
-    # ------------------------------------------------------------- 告警推送
+    # ------------------------------------------------------- 通知/告警调度
+
+    def _schedule_send(self, umo: str, text: str) -> None:
+        """独立端口线程 → 主事件循环调度。"""
+        try:
+            if self._loop is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._send_to(umo, text)))
+            else:
+                logger.warning(f"{PLUGIN_NAME} 主循环未就绪，跳过推送: {text}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"{PLUGIN_NAME} 推送调度失败: {exc}")
+
+    def _schedule_alert(self, alert: dict) -> None:
+        try:
+            if self._loop is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._push_alert(alert)))
+            else:
+                logger.warning(f"{PLUGIN_NAME} 主循环未就绪，告警仅入库: {alert['text']}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"{PLUGIN_NAME} 告警调度失败: {exc}")
 
     async def _push_alert(self, alert: dict) -> None:
         device_id = alert.get("device_id")
