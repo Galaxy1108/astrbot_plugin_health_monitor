@@ -369,3 +369,24 @@ def test_hr_stats_on(store):
 
     empty = store.hr_stats_on(datetime.date(2020, 1, 1))
     assert empty["count"] == 0 and empty["min"] is None
+
+
+def test_alert_ignores_historical_backfill(store):
+    """历史回补数据（窗口外）不触发告警。"""
+    _bind_device(store, "AA:BB:CC")
+    now = int(datetime.datetime.now().timestamp())
+    device = _device("AA:BB:CC")
+    # 三天前的高心率 + 现在的正常心率
+    store.ingest(
+        device,
+        [
+            _sample(now - 3 * 24 * 3600, hr=190),
+            _sample(now - 60, hr=80),
+        ],
+    )
+    _, alert, _, _ = store.ingest(device, [_sample(now - 2 * 24 * 3600, hr=200)])
+    assert alert is None  # 窗口外的高值不告警
+
+    # 窗口内的持续高心率才告警
+    _, alert2, _, _ = store.ingest(device, [_sample(now - 120, hr=150)])
+    assert alert2 is not None and alert2["type"] == "high_hr"

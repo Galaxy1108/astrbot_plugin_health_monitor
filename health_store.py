@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS extended (
 #: 同一 (设备, 告警类型) 的去重窗口，秒
 ALERT_DEDUPE_SECONDS = 30 * 60
 
+#: 告警只评估最近这段时间内的样本（防止历史回补数据触发误报）
+ALERT_HR_WINDOW_SECONDS = 30 * 60
+
 #: 一次上传允许的最大样本条数（防御异常客户端）
 MAX_SAMPLES_PER_UPLOAD = 100_000
 
@@ -384,7 +387,10 @@ class HealthStore:
                 continue
             hr = self._clean_int(s.get("hr"))
             ts = self._clean_int(s.get("ts"))
-            if hr is not None and hr > 0 and ts is not None:
+            if hr is None or hr <= 0 or ts is None:
+                continue
+            # 只看最近窗口内的样本：历史回补数据不参与告警判定
+            if ts >= now - ALERT_HR_WINDOW_SECONDS:
                 hr_values.append((ts, hr))
         if hr_values:
             max_hr = max(hr for _, hr in hr_values)
