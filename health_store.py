@@ -476,6 +476,24 @@ class HealthStore:
             ).fetchone()
         return int(row["total"])
 
+    def hr_stats_on(self, date: datetime.date, device_ids: list[int] | None = None) -> dict:
+        """某自然日的心率统计（hr>0 的样本）：条数 / 最低 / 最高 / 平均。"""
+        start = int(datetime(date.year, date.month, date.day).timestamp())
+        end = start + 24 * 3600
+        scope, scope_args = self._scope_sql(device_ids)
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT COUNT(*) AS n, MIN(hr) AS mn, MAX(hr) AS mx, AVG(hr) AS av FROM samples"
+                f" WHERE hr > 0 AND ts >= ? AND ts < ?{scope}",
+                (start, end, *scope_args),
+            ).fetchone()
+        return {
+            "count": int(row["n"]),
+            "min": int(row["mn"]) if row["mn"] is not None else None,
+            "max": int(row["mx"]) if row["mx"] is not None else None,
+            "avg": round(float(row["av"]), 1) if row["av"] is not None else None,
+        }
+
     def sleep_summary(self, date: datetime.date, device_ids: list[int] | None = None) -> dict:
         """“date 那晚”的睡眠汇总：窗口为 date-1 20:00 → date 12:00。"""
         start = int(datetime(date.year, date.month, date.day, 20, 0).timestamp()) - 24 * 3600

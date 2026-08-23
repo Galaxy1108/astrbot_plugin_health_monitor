@@ -183,6 +183,43 @@ class HealthSleepTool(FunctionTool[AstrAgentContext]):
 
 
 @dataclass
+class HealthHrHistoryTool(FunctionTool[AstrAgentContext]):
+    """查询某天的心率统计。"""
+
+    name: str = "health_hr_history"
+    description: str = (
+        "查询某一天的心率统计（最低/最高/平均，仅当前用户已绑定设备）。"
+        "date 为 YYYY-MM-DD，或 today / yesterday；不传时默认今天。"
+        "用于回答“今天心率怎么样”“昨天心率最高多少”等问题。"
+    )
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "日期：YYYY-MM-DD / today / yesterday",
+                },
+            },
+        }
+    )
+    store: Any = None
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        device_ids = _scope(self.store, _current_umo(context))
+        if not device_ids:
+            return _BIND_GUIDE
+        day = parse_date(kwargs.get("date")) or datetime.now().date()
+        stats = self.store.hr_stats_on(day, device_ids=device_ids)
+        if stats["count"] == 0:
+            return f"{day.isoformat()} 没有心率数据。"
+        return (
+            f"{day.isoformat()} 心率：最低 {stats['min']}，最高 {stats['max']}，"
+            f"平均 {stats['avg']} 次/分（共 {stats['count']} 条记录）。"
+        )
+
+
+@dataclass
 class HealthAlertsTool(FunctionTool[AstrAgentContext]):
     """查询近期告警。"""
 

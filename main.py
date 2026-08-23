@@ -32,6 +32,7 @@ from .health_store import HealthStore, normalize_binding_code
 from .health_tools import (
     HealthAlertsTool,
     HealthExtendedTool,
+    HealthHrHistoryTool,
     HealthLatestTool,
     HealthSleepTool,
     HealthStepsTool,
@@ -76,6 +77,7 @@ class HealthMonitorPlugin(Star):
 
         context.add_llm_tools(
             HealthLatestTool(store=self.store),
+            HealthHrHistoryTool(store=self.store),
             HealthStepsTool(store=self.store),
             HealthSleepTool(store=self.store),
             HealthAlertsTool(store=self.store),

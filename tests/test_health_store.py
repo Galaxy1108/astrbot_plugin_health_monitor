@@ -330,3 +330,29 @@ def test_parse_date():
     assert parse_date("2024-01-15") == datetime.date(2024, 1, 15)
     assert parse_date("garbage") is None
     assert parse_date(None) is None
+
+
+def test_hr_stats_on(store):
+    """按天查询心率统计。"""
+    _bind_device(store, "AA:BB:CC")
+    now = datetime.datetime.now()
+    today = now.date()
+    midnight = datetime.datetime(today.year, today.month, today.day)
+    start = int(midnight.timestamp())
+    store.ingest(
+        _device("AA:BB:CC"),
+        [
+            _sample(start + 0, hr=70),
+            _sample(start + 60, hr=80),
+            _sample(start + 120, hr=90),
+            _sample(start + 180, hr=0),  # 无心率样本不计入
+        ],
+    )
+    stats = store.hr_stats_on(today)
+    assert stats["count"] == 3
+    assert stats["min"] == 70
+    assert stats["max"] == 90
+    assert stats["avg"] == 80.0
+
+    empty = store.hr_stats_on(datetime.date(2020, 1, 1))
+    assert empty["count"] == 0 and empty["min"] is None
