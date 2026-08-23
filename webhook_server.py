@@ -53,9 +53,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"status": "error", "message": "缺少 device 或 samples 字段"}, status=400)
             return
 
+        address = str(device.get("address") or "")
+        device_name = str(device.get("name") or "?")
+        binding_code = str(device.get("binding_code") or "")
+        sample_count = len(samples)
+        logger.info(f"upload from {device_name} ({address}) samples={sample_count} binding_code={binding_code or '(none)'}")
+
+        # 新设备首次上报（服务器从未见过该 MAC）
+        try:
+            if not any(d.get("address") == address for d in self.store.devices()):
+                logger.info(f"NEW DEVICE first report: {device_name} ({address}) type={device.get('type')}")
+        except Exception:  # noqa: BLE001
+            pass
+
         try:
             received, alert, newly_bound_umos, pending_bind = self.store.ingest(device, samples, extended)
         except ValueError as exc:
+            logger.warning(f"upload rejected from {address}: {exc}")
             self._json({"status": "error", "message": str(exc)}, status=400)
             return
         except Exception as exc:  # noqa: BLE001
@@ -64,7 +78,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if pending_bind:
-            code = str(device.get("binding_code") or "")
+            logger.warning(
+                f"BLOCKED unbound upload from {device_name} ({address}): data NOT stored, "
+                f"waiting for /bind (binding_code={binding_code or 'none'})"
+            )
+            code = binding_code
             self._json(
                 {
                     "status": "pending_bind",
@@ -73,17 +91,19 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
 
+        logger.info(f"stored {received} samples from {device_name} ({address})")
         # 刚完成绑定的会话 → 通知
         if newly_bound_umos:
-            device_name = str(device.get("name") or device.get("address") or "设备")
             for umo in newly_bound_umos:
+                logger.info(f"device {address} bound to session {umo} (auto)")
                 text = (
-                    f"✅ 设备绑定成功：{device_name}（{device.get('address')}）。"
+                    f"✅ 设备绑定成功：{device_name}（{address}）。"
                     "现在可以直接问我健康数据了，例如“现在心率多少”。"
                 )
                 threading.Thread(target=self._notify, args=(umo, text), daemon=True).start()
 
         if alert:
+            logger.info(f"ALERT triggered for {address}: {alert['type']} value={alert['value']}")
             threading.Thread(target=self._notify_alert, args=(alert,), daemon=True).start()
 
         self._json({"status": "ok", "received": received})

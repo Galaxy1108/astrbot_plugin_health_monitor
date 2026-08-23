@@ -178,6 +178,7 @@ class HealthMonitorPlugin(Star):
             umo = event.unified_msg_origin
             device = await asyncio.to_thread(self.store.bind_by_code, code, umo)
             if device:
+                logger.info(f"device {device['address']} bound to session {umo} by /bind")
                 return f"✅ 绑定成功：{device['name']}（{device['address']}）。现在可以问我“现在心率多少”“昨晚睡眠怎么样”了。"
             is_new = await asyncio.to_thread(self.store.register_pending_bind, code, umo)
             if is_new:
@@ -205,6 +206,7 @@ class HealthMonitorPlugin(Star):
             umo = event.unified_msg_origin
             removed = await asyncio.to_thread(self.store.unbind, umo, identifier)
             if removed:
+                logger.info(f"session {umo} unbound device {removed['address']}")
                 return f"已解除绑定：{removed['name']}（{removed['address']}）。历史数据仍保留，重新绑定同码即可恢复可见。"
             return "未找到绑定关系。先用 /devices 查看你绑定的设备。"
         except Exception as exc:  # noqa: BLE001
