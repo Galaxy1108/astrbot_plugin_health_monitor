@@ -192,7 +192,7 @@ class HealthMonitorPlugin(Star):
 
     @filter.command("unbind")
     async def unbind_device(self, event: AstrMessageEvent):
-        """解除当前会话与设备的绑定。用法：/unbind <设备名或地址>"""
+        """解除当前会话与设备的绑定。用法：/unbind <设备名/地址/绑定码>"""
         yield event.plain_result(await self._do_unbind(event))
 
     @filter.command("解绑设备")
@@ -204,7 +204,7 @@ class HealthMonitorPlugin(Star):
         try:
             identifier = self._command_arg(event.message_str)
             if not identifier:
-                return "用法：/unbind <设备名或地址>（可用 /devices 查看）"
+                return "用法：/unbind <设备名/地址/绑定码>（绑定码在手机设置页查看）"
             umo = event.unified_msg_origin
             removed = await asyncio.to_thread(self.store.unbind, umo, identifier)
             if removed:

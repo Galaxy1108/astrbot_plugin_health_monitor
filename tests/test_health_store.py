@@ -211,6 +211,19 @@ def test_unbind_only_removes_session(store):
     assert store.unbind("umo:test", "AA:BB:CC") is None
 
 
+def test_unbind_by_binding_code(store):
+    """解绑支持绑定码（形如 GB-XXXXXX）。"""
+    _bind_device(store, "AA:BB:CC", code="CODE12")
+    store.bind_by_code("CODE12", "umo:other")
+
+    # 用带前缀的完整绑定码解绑 umo:test
+    removed = store.unbind("umo:test", "GB-CODE12")
+    assert removed is not None and removed["address"] == "AA:BB:CC"
+    assert len(store.bound_devices("umo:test")) == 0
+    # 其他会话不受影响
+    assert len(store.bound_devices("umo:other")) == 1
+
+
 def test_query_isolation_by_binding(store):
     now = int(datetime.datetime.now().timestamp())
     _bind_device(store, "AA:BB:CC", code="AAAAAA")

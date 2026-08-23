@@ -311,14 +311,20 @@ class HealthStore:
         return {"id": int(row["id"]), "name": row["name"], "address": row["address"], "type": row["type"]}
 
     def unbind(self, umo: str, device_identifier: str) -> dict | None:
-        """解除 umo 与设备的绑定（identifier 匹配 name 或 address）；返回设备信息或 None。"""
+        """解除 umo 与设备的绑定。
+
+        identifier 支持：设备名 / MAC 地址 / 绑定码（形如 GB-XXXXXX）。
+        返回第一个被解除的设备信息，或 None。
+        """
         identifier = device_identifier.strip().lower()
         if not identifier:
             return None
+        code = normalize_binding_code(device_identifier) or ""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, name, address FROM devices WHERE LOWER(name)=? OR LOWER(address)=?",
-                (identifier, identifier),
+                "SELECT id, name, address FROM devices"
+                " WHERE LOWER(name)=? OR LOWER(address)=? OR binding_code=?",
+                (identifier, identifier, code),
             ).fetchall()
             if not rows:
                 return None
