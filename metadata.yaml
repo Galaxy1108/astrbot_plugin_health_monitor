@@ -4,7 +4,7 @@ short_desc: 接收 Gadgetbridge Webhook 上传的健康数据，支持自然语�
 desc: >-
   接收改装版 Gadgetbridge 手机端通过 HTTP 上传的健康数据（步数 / 心率 / 睡眠 / 电量），
   存入 SQLite。注册 LLM 工具支持自然语言查询（“现在心率多少”“今天走了多少步”
-  “昨晚睡眠怎么样”），并在心率过高、电量过低时向指定会话推送主动告警。
+  “昨晚睡眠怎么样”），并在心率过高、电量过低时向绑定会话推送主动告警（支持多用户设备绑定）。
 version: 0.1.0
 author: Galaxy1108
 repo: https://github.com/Galaxy1108/astrbot_plugin_health_monitor
