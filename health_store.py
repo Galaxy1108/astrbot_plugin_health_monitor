@@ -506,6 +506,18 @@ class HealthStore:
             "avg": round(float(row["av"]), 1) if row["av"] is not None else None,
         }
 
+    def hr_series_on(self, date: datetime.date, device_ids: list[int] | None = None) -> list[dict]:
+        """某自然日的完整心率序列（hr>0，按时间升序），供明细曲线使用。"""
+        start = int(datetime(date.year, date.month, date.day).timestamp())
+        end = start + 24 * 3600
+        scope, scope_args = self._scope_sql(device_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT ts, hr FROM samples WHERE hr > 0 AND ts >= ? AND ts < ?{scope} ORDER BY ts",
+                (start, end, *scope_args),
+            ).fetchall()
+        return [{"ts": int(r["ts"]), "hr": int(r["hr"])} for r in rows]
+
     def sleep_summary(self, date: datetime.date, device_ids: list[int] | None = None) -> dict:
         """“date 那晚”的睡眠汇总：窗口为 date-1 20:00 → date 12:00。"""
         start = int(datetime(date.year, date.month, date.day, 20, 0).timestamp()) - 24 * 3600

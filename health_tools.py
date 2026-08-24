@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -16,9 +17,13 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from .health_store import HealthStore, parse_date
+from .temp_files import TEMP_MAX_AGE_SECONDS, cleanup_temp, resolve_temp_file, write_temp_series
 
 #: 未绑定时给 LLM 的引导文案（让模型原样回复用户）
 _BIND_GUIDE = "你还没有绑定任何设备。请让用户先发送：/bind <绑定码>，绑定码在手机 Gadgetbridge 的「设置 → 自动化 → Webhook 上传」页面查看（形如 GB-XXXXXX）。"
+
+#: 心率明细超过该条数时不再内联返回，而是写入临时文件让 AI 用 read_temp_file 读取
+_HR_INLINE_LIMIT = 200
 
 
 def _current_umo(context: ContextWrapper[AstrAgentContext]) -> str | None:
@@ -184,13 +189,14 @@ class HealthSleepTool(FunctionTool[AstrAgentContext]):
 
 @dataclass
 class HealthHrHistoryTool(FunctionTool[AstrAgentContext]):
-    """查询某天的心率统计。"""
+    """查询某天的心率统计或完整曲线。"""
 
     name: str = "health_hr_history"
     description: str = (
-        "查询某一天的心率统计（最低/最高/平均，仅当前用户已绑定设备）。"
-        "date 为 YYYY-MM-DD，或 today / yesterday；不传时默认今天。"
-        "用于回答“今天心率怎么样”“昨天心率最高多少”等问题。"
+        "查询某一天的心率（仅当前用户已绑定设备）。date 为 YYYY-MM-DD，"
+        "或 today / yesterday；不传时默认今天。detail=false（默认）返回统计"
+        "（最低/最高/平均/条数）；detail=true 返回完整心率曲线（每条的时间与数值），"
+        "数据量大时会写入临时文件并提示用 read_temp_file 读取。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -200,10 +206,15 @@ class HealthHrHistoryTool(FunctionTool[AstrAgentContext]):
                     "type": "string",
                     "description": "日期：YYYY-MM-DD / today / yesterday",
                 },
+                "detail": {
+                    "type": "boolean",
+                    "description": "是否返回完整心率曲线明细（默认 false）",
+                },
             },
         }
     )
     store: Any = None
+    data_dir: Any = None
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
         device_ids = _scope(self.store, _current_umo(context))
@@ -213,10 +224,67 @@ class HealthHrHistoryTool(FunctionTool[AstrAgentContext]):
         stats = self.store.hr_stats_on(day, device_ids=device_ids)
         if stats["count"] == 0:
             return f"{day.isoformat()} 没有心率数据。"
+        if not kwargs.get("detail"):
+            return (
+                f"{day.isoformat()} 心率：最低 {stats['min']}，最高 {stats['max']}，"
+                f"平均 {stats['avg']} 次/分（共 {stats['count']} 条记录）。"
+            )
+        series = self.store.hr_series_on(day, device_ids=device_ids)
+        if len(series) <= _HR_INLINE_LIMIT:
+            inline = json.dumps(
+                [{"t": p["ts"], "hr": p["hr"]} for p in series],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            return f"{day.isoformat()} 完整心率曲线（{len(series)} 条）：{inline}"
+        if self.data_dir is None:
+            return f"{day.isoformat()} 共 {len(series)} 条心率记录，数据量较大，无法内联返回。"
+        name = write_temp_series(Path(self.data_dir), [{"t": p["ts"], "hr": p["hr"]} for p in series])
         return (
-            f"{day.isoformat()} 心率：最低 {stats['min']}，最高 {stats['max']}，"
-            f"平均 {stats['avg']} 次/分（共 {stats['count']} 条记录）。"
+            f"{day.isoformat()} 共 {len(series)} 条心率记录，已写入临时文件 {name}。"
+            f"请调用 read_temp_file 工具读取该文件（path 参数传 {name}），读取后文件会自动删除。"
         )
+
+
+@dataclass
+class ReadTempFileTool(FunctionTool[AstrAgentContext]):
+    """读取健康数据临时文件（读取后自动删除）。"""
+
+    name: str = "read_temp_file"
+    description: str = (
+        "读取健康数据临时文件的内容（如完整心率曲线）。path 为文件名"
+        "（形如 hr_20260824_235000_1a2b3c.json）。读取成功后文件自动删除；"
+        "文件可能已被删除（已读过或过期清理），此时返回提示。"
+    )
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "临时文件名（不含路径）",
+                },
+            },
+            "required": ["path"],
+        }
+    )
+    data_dir: Any = None
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        if self.data_dir is None:
+            return "临时文件目录未配置。"
+        raw = str(kwargs.get("path") or "").strip()
+        target = resolve_temp_file(Path(self.data_dir), raw)
+        if target is None:
+            return f"非法的临时文件名：{raw}。"
+        cleanup_temp(target.parent, TEMP_MAX_AGE_SECONDS)
+        if not target.is_file():
+            return f"临时文件不存在（可能已读取删除或过期清理）：{target.name}"
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")
+        finally:
+            target.unlink(missing_ok=True)
+        return content
 
 
 @dataclass

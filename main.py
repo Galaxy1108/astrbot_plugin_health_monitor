@@ -36,6 +36,7 @@ from .health_tools import (
     HealthLatestTool,
     HealthSleepTool,
     HealthStepsTool,
+    ReadTempFileTool,
 )
 from .webhook_server import WebhookHttpServer
 
@@ -77,11 +78,12 @@ class HealthMonitorPlugin(Star):
 
         context.add_llm_tools(
             HealthLatestTool(store=self.store),
-            HealthHrHistoryTool(store=self.store),
+            HealthHrHistoryTool(store=self.store, data_dir=data_dir),
             HealthStepsTool(store=self.store),
             HealthSleepTool(store=self.store),
             HealthAlertsTool(store=self.store),
             HealthExtendedTool(store=self.store),
+            ReadTempFileTool(data_dir=data_dir),
         )
 
         self._loop: asyncio.AbstractEventLoop | None = None
