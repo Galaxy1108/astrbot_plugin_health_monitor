@@ -57,7 +57,23 @@ class _Handler(BaseHTTPRequestHandler):
         device_name = str(device.get("name") or "?")
         binding_code = str(device.get("binding_code") or "")
         sample_count = len(samples)
-        logger.info(f"upload from {device_name} ({address}) samples={sample_count} binding_code={binding_code or '(none)'}")
+        with_steps = sum(1 for s in samples if isinstance(s, dict) and (s.get("steps") or 0) > 0)
+        with_hr = sum(1 for s in samples if isinstance(s, dict) and (s.get("hr") or 0) > 0)
+        kind_counter: dict[str, int] = {}
+        for s in samples:
+            if isinstance(s, dict):
+                k = str(s.get("kind") or "")
+                kind_counter[k] = kind_counter.get(k, 0) + 1
+        logger.info(
+            f"upload from {device_name} ({address}) samples={sample_count} "
+            f"with_steps={with_steps} with_hr={with_hr} kinds={kind_counter} "
+            f"binding_code={binding_code or '(none)'}"
+        )
+        # 诊断：样本内容预览（前 3 条）与扩展类别
+        preview = json.dumps(samples[:3], ensure_ascii=False)[:600] if samples else "[]"
+        logger.debug(f"sample preview: {preview}")
+        ext_cats = list(extended.keys()) if isinstance(extended, dict) else None
+        logger.debug(f"extended categories: {ext_cats}")
 
         # 新设备首次上报（服务器从未见过该 MAC）
         try:
