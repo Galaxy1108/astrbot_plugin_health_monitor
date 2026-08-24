@@ -82,7 +82,7 @@ class HealthMonitorPlugin(Star):
             HealthStepsTool(store=self.store),
             HealthSleepTool(store=self.store),
             HealthAlertsTool(store=self.store),
-            HealthExtendedTool(store=self.store),
+            HealthExtendedTool(store=self.store, data_dir=data_dir),
             ReadTempFileTool(data_dir=data_dir),
         )
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from astrbot.core.agent.run_context import ContextWrapper
@@ -330,7 +331,26 @@ _EXTENDED_FORMATTERS: dict[str, tuple[str, list[str]]] = {
     "sleep_sessions": ("睡眠时段", ["total_duration", "deep_sleep_duration", "light_sleep_duration", "rem_sleep_duration", "awake_duration", "wakeup_time", "stage"]),
     "dailysummary": ("每日汇总", ["steps", "hr_resting", "hr_avg", "hr_max", "hr_min", "stress_avg", "stress_max", "type", "value"]),
     "pai": ("PAI", ["pai_today", "pai_total", "pai_low", "pai_moderate", "pai_high"]),
-    "workouts": ("运动记录", ["name", "activity_kind", "summary_data", "start_time", "end_time"]),
+    "workouts": ("运动记录", ["name", "activity_kind", "type", "distance", "calories", "step_count", "duration", "summary_data", "start_time", "end_time"]),
+    "workout_hr": ("运动过程心率", ["heart_rate", "step_rate", "speed"]),
+}
+
+#: 华为运动 type 编码 → 中文（见 HuaweiWorkoutGbParser.HuaweiActivityType）
+_HUAWEI_TYPE_NAMES = {
+    1: "跑步", 2: "走路", 3: "骑行", 4: "登山", 5: "室内跑步", 6: "泳池游泳",
+    7: "室内骑行", 8: "公开水域游泳", 11: "越野跑", 13: "室内走路", 14: "徒步",
+    21: "跳绳", 22: "自由潜水", 23: "闭气训练", 24: "闭气测试", 25: "水肺潜水",
+    128: "乒乓球", 129: "羽毛球", 130: "网球", 131: "足球", 132: "篮球",
+    133: "排球", 134: "椭圆机", 135: "划船机", 136: "踏步机", 137: "瑜伽",
+    138: "普拉提", 139: "有氧操", 140: "力量训练", 141: "动感单车", 142: "空中漫步",
+    143: "HIIT", 145: "CrossFit", 146: "功能性训练", 147: "体能训练",
+    148: "跆拳道", 149: "拳击", 150: "自由搏击", 151: "空手道", 152: "击剑",
+    153: "肚皮舞", 154: "爵士舞", 155: "拉丁舞", 156: "芭蕾", 157: "核心训练",
+    158: "BodyCombat", 159: "剑道", 160: "单杠", 161: "双杠", 162: "街舞",
+    163: "轮滑", 164: "武术", 165: "广场舞", 166: "太极", 167: "舞蹈",
+    168: "呼啦圈", 169: "飞盘", 170: "飞镖", 171: "射箭", 172: "骑马",
+    173: "激光枪战", 174: "放风筝", 175: "拔河", 176: "荡秋千", 177: "爬楼梯",
+    178: "障碍赛", 179: "台球", 180: "瑜伽",
 }
 
 _ACTIVITY_KIND_NAMES = {
@@ -342,14 +362,64 @@ _ACTIVITY_KIND_NAMES = {
 }
 
 
+def _workout_kind_name(row: dict) -> str:
+    """运动类型：优先 GB activity_kind，其次华为 type。"""
+    kind = row.get("activity_kind")
+    if isinstance(kind, int) and kind in _ACTIVITY_KIND_NAMES:
+        return _ACTIVITY_KIND_NAMES[kind]
+    htype = row.get("type")
+    if isinstance(htype, int) and htype in _HUAWEI_TYPE_NAMES:
+        return _HUAWEI_TYPE_NAMES[htype]
+    if isinstance(kind, int) or isinstance(htype, int):
+        return f"未知({kind if isinstance(kind, int) else htype})"
+    return "未知"
+
+
+def _workout_hr_avg(row: dict) -> int | None:
+    """运动记录的平均心率（summary_data 里的 averageHR）。"""
+    sd = row.get("summary_data")
+    if not isinstance(sd, str):
+        return None
+    try:
+        obj = json.loads(sd)
+        val = obj.get("averageHR", {}).get("value")
+        return int(val) if isinstance(val, (int, float)) else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _fmt_extended_row(metric: str, row: dict) -> str:
     ts = row.get("timestamp")
     time_str = _fmt_ts(ts) if isinstance(ts, int) else ""
     if metric == "workouts":
-        kind = row.get("activity_kind")
-        kind_name = _ACTIVITY_KIND_NAMES.get(kind, str(kind)) if isinstance(kind, int) else "未知"
+        kind_name = _workout_kind_name(row)
         name = row.get("name") or kind_name
-        return f"{name}（{kind_name}）于 {time_str}"
+        parts = [f"{name}（{kind_name}）于 {time_str}"]
+        dist = row.get("distance")
+        if isinstance(dist, (int, float)) and dist > 0:
+            parts.append(f"距离 {dist / 1000:.2f} 公里")
+        calories = row.get("calories")
+        if isinstance(calories, (int, float)) and calories > 0:
+            parts.append(f"消耗 {calories} 千卡")
+        steps = row.get("step_count")
+        if isinstance(steps, (int, float)) and steps > 0:
+            parts.append(f"{steps} 步")
+        duration = row.get("duration")
+        if isinstance(duration, (int, float)) and duration > 0:
+            parts.append(f"时长 {int(duration) // 60} 分 {int(duration) % 60} 秒")
+        avg_hr = _workout_hr_avg(row)
+        if avg_hr is not None:
+            parts.append(f"平均心率 {avg_hr}")
+        return "，".join(parts)
+    if metric == "workout_hr":
+        hr = row.get("heart_rate")
+        step_rate = row.get("step_rate")
+        parts = [time_str]
+        if isinstance(hr, (int, float)):
+            parts.append(f"心率 {hr}")
+        if isinstance(step_rate, (int, float)):
+            parts.append(f"步频 {step_rate}")
+        return "，".join(parts)
     if metric == "hrv":
         rr = row.get("rr_millis")
         if isinstance(rr, (int, float)):
@@ -376,14 +446,15 @@ def _fmt_extended_row(metric: str, row: dict) -> str:
 
 @dataclass
 class HealthExtendedTool(FunctionTool[AstrAgentContext]):
-    """查询扩展指标：血氧 / 压力 / HRV / 呼吸率 / 睡眠时段 / 每日汇总 / PAI / 运动记录。"""
+    """查询扩展指标：血氧 / 压力 / HRV / 呼吸率 / 睡眠时段 / 每日汇总 / PAI / 运动记录 / 运动过程心率。"""
 
     name: str = "health_extended"
     description: str = (
         "查询扩展健康指标（仅当前用户已绑定设备）。metric 取值："
         "spo2（血氧）、stress（压力）、hrv（HRV/RR 间期）、respiration（睡眠呼吸率）、"
         "sleep_sessions（睡眠时段汇总）、dailysummary（每日汇总：步数/静息心率/压力等）、"
-        "pai（PAI 活动指数）、workouts（运动记录）。"
+        "pai（PAI 活动指数）、workouts（运动记录：类型/距离/卡路里/步数/时长/平均心率）、"
+        "workout_hr（运动过程逐点心率/步频，数据量大时写入临时文件并用 read_temp_file 读取）。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -391,7 +462,7 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
             "properties": {
                 "metric": {
                     "type": "string",
-                    "enum": ["spo2", "stress", "hrv", "respiration", "sleep_sessions", "dailysummary", "pai", "workouts"],
+                    "enum": ["spo2", "stress", "hrv", "respiration", "sleep_sessions", "dailysummary", "pai", "workouts", "workout_hr"],
                     "description": "要查询的扩展指标",
                 },
                 "days": {"type": "integer", "description": "查询最近多少天的记录（默认 1）"},
@@ -400,6 +471,7 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
         }
     )
     store: Any = None
+    data_dir: Any = None
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
         device_ids = _scope(self.store, _current_umo(context))
@@ -407,7 +479,10 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
             return _BIND_GUIDE
         metric = str(kwargs.get("metric") or "").strip()
         if metric not in _EXTENDED_FORMATTERS:
-            return "不支持的指标，可选：spo2 / stress / hrv / respiration / sleep_sessions / dailysummary / pai / workouts。"
+            return (
+                "不支持的指标，可选：spo2 / stress / hrv / respiration / sleep_sessions / "
+                "dailysummary / pai / workouts / workout_hr。"
+            )
         try:
             days = max(1, min(int(kwargs.get("days") or 1), 30))
         except (TypeError, ValueError):
@@ -419,6 +494,27 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
         if metric == "workouts":
             lines = [_fmt_extended_row(metric, r) for r in rows[-5:]]
             return f"最近 {days} 天共 {len(rows)} 条运动记录，最近几条：\n" + "\n".join(lines)
+        if metric == "workout_hr":
+            if len(rows) <= _HR_INLINE_LIMIT:
+                inline = json.dumps(
+                    [
+                        {"t": r["timestamp"], "hr": r.get("heart_rate"), "sr": r.get("step_rate")}
+                        for r in rows
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                return f"最近 {days} 天运动过程心率（{len(rows)} 点）：{inline}"
+            if self.data_dir is None:
+                return f"共 {len(rows)} 个运动过程数据点，数据量较大，无法内联返回。"
+            name = write_temp_series(
+                Path(self.data_dir),
+                [{"t": r["timestamp"], "hr": r.get("heart_rate"), "sr": r.get("step_rate")} for r in rows],
+            )
+            return (
+                f"共 {len(rows)} 个运动过程数据点，已写入临时文件 {name}。"
+                f"请调用 read_temp_file 工具读取该文件（path 参数传 {name}），读取后文件会自动删除。"
+            )
         # 展示最近若干条 + 汇总统计
         lines = [_fmt_extended_row(metric, r) for r in rows[-3:]]
         return f"最近 {days} 天共 {len(rows)} 条，最新：\n" + "\n".join(lines)
