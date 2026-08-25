@@ -171,7 +171,8 @@ APK 产物由 **GitHub Actions** 构建，从 Actions 页面下载：
 3. 在 **Artifacts** 下载 `apk-Debug-webhook-module`，里面是
    `gadgetbridge-webhook-debug-webhook-module-<sha>.apk`（带 commit 号区分版本）。
 
-版本号保持 `0.93.0`，版本差异看文件名里的 commit 号。安装方式取决于当前已装的包：
+版本号跟随上游 Gadgetbridge（当前为 `0.93.0`；上游发布新版本后本改装版同步更新），
+版本差异看文件名里的 commit 号。安装方式取决于当前已装的包：
 
 - **正常覆盖安装**（当前包 versionCode ≤ 新包）：数据保留，直接覆盖；
 - **提示"已存在更高版本"**：说明当前包比下载的新，去 Actions 拿最新一次构建即可；
