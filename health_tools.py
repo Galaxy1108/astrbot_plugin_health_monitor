@@ -401,6 +401,14 @@ _HUAWEI_TYPE_NAMES = {
     178: "障碍赛", 179: "台球", 180: "瑜伽",
 }
 
+#: 睡眠分期英文 kind → 中文（samples 表的 kind）
+_SLEEP_STAGE_NAMES = {
+    "LIGHT_SLEEP": "浅睡",
+    "DEEP_SLEEP": "深睡",
+    "REM_SLEEP": "REM",
+    "AWAKE_SLEEP": "清醒",
+}
+
 _ACTIVITY_KIND_NAMES = {
     1: "活动", 2: "浅睡", 4: "深睡", 8: "未佩戴", 16: "跑步", 32: "走路", 64: "游泳",
     128: "骑行", 256: "跑步机", 512: "锻炼", 1024: "公开水域游泳", 2048: "室内骑行",
