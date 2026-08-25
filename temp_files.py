@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -14,21 +15,46 @@ from pathlib import Path
 #: 临时文件自动清理：超过该秒数的文件在下一次工具调用时删除
 TEMP_MAX_AGE_SECONDS = 3600
 
-#: 临时文件名的安全模式（读取工具只允许这类文件）
-TEMP_NAME_RE = re.compile(r"^hr_\d{8}_\d{6}_[0-9a-f]{6}\.json$")
+#: 临时文件名的安全模式（读取工具只允许这类文件）。
+#: 形如 hr_<tag>_<ts>_<rand>.json（tag 可选，8 位小写 hex）
+TEMP_NAME_RE = re.compile(r"^hr_([a-z0-9]{8}_)?\d{8}_\d{6}_[0-9a-f]{6}\.json$")
 
 
-def write_temp_series(data_dir: Path, series: list[dict]) -> str:
-    """把明细序列写入 data_dir/temp/，返回文件名（相对 temp 目录）。"""
+def temp_tag(umo: str) -> str:
+    """会话标识 → 文件名 tag（8 位小写 hex，安全字符）。"""
+    return hashlib.sha1(umo.encode("utf-8")).hexdigest()[:8]
+
+
+def write_temp_series(data_dir: Path, series: list[dict], tag: str = "") -> str:
+    """把明细序列写入 data_dir/temp/，返回文件名（相对 temp 目录）。
+
+    tag 用于把文件关联到某个会话，方便对话完成钩子按会话清理。
+    """
     temp_dir = data_dir / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     cleanup_temp(temp_dir)
-    name = f"hr_{time.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}.json"
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    rand = secrets.token_hex(3)
+    name = f"hr_{tag}_{stamp}_{rand}.json" if tag else f"hr_{stamp}_{rand}.json"
     (temp_dir / name).write_text(
         json.dumps(series, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
     return name
+
+
+def cleanup_for_tag(temp_dir: Path, tag: str) -> None:
+    """删除某会话（tag）生成的所有临时文件（对话完成钩子调用）。"""
+    try:
+        if not tag or not re.fullmatch(r"[a-z0-9]{8}", tag):
+            return
+        for f in temp_dir.glob(f"hr_{tag}_*.json"):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                continue
+    except OSError:
+        pass
 
 
 def cleanup_temp(temp_dir: Path, max_age: float | None = None) -> None:

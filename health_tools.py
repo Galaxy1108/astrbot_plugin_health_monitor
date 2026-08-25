@@ -18,7 +18,13 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from .health_store import HealthStore, parse_date
-from .temp_files import TEMP_MAX_AGE_SECONDS, cleanup_temp, resolve_temp_file, write_temp_series
+from .temp_files import (
+    TEMP_MAX_AGE_SECONDS,
+    cleanup_temp,
+    resolve_temp_file,
+    temp_tag,
+    write_temp_series,
+)
 
 #: 未绑定时给 LLM 的引导文案（让模型原样回复用户）
 _BIND_GUIDE = "你还没有绑定任何设备。请让用户先发送：/bind <绑定码>，绑定码在手机 Gadgetbridge 的「设置 → 自动化 → Webhook 上传」页面查看（形如 GB-XXXXXX）。"
@@ -240,7 +246,8 @@ class HealthHrHistoryTool(FunctionTool[AstrAgentContext]):
             return f"{day.isoformat()} 完整心率曲线（{len(series)} 条）：{inline}"
         if self.data_dir is None:
             return f"{day.isoformat()} 共 {len(series)} 条心率记录，数据量较大，无法内联返回。"
-        name = write_temp_series(Path(self.data_dir), [{"t": p["ts"], "hr": p["hr"]} for p in series])
+        tag = temp_tag(_current_umo(context) or "")
+        name = write_temp_series(Path(self.data_dir), [{"t": p["ts"], "hr": p["hr"]} for p in series], tag=tag)
         return (
             f"{day.isoformat()} 共 {len(series)} 条心率记录，已写入临时文件 {name}。"
             f"请调用 read_temp_file 工具读取该文件（path 参数传 {name}），读取后文件会自动删除。"
@@ -507,9 +514,11 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
                 return f"最近 {days} 天运动过程心率（{len(rows)} 点）：{inline}"
             if self.data_dir is None:
                 return f"共 {len(rows)} 个运动过程数据点，数据量较大，无法内联返回。"
+            tag = temp_tag(_current_umo(context) or "")
             name = write_temp_series(
                 Path(self.data_dir),
                 [{"t": r["timestamp"], "hr": r.get("heart_rate"), "sr": r.get("step_rate")} for r in rows],
+                tag=tag,
             )
             return (
                 f"共 {len(rows)} 个运动过程数据点，已写入临时文件 {name}。"

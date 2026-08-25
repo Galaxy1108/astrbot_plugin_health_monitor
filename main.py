@@ -38,6 +38,7 @@ from .health_tools import (
     HealthStepsTool,
     ReadTempFileTool,
 )
+from .temp_files import cleanup_for_tag, temp_tag
 from .webhook_server import WebhookHttpServer
 
 PLUGIN_NAME = "astrbot_plugin_health_monitor"
@@ -50,6 +51,7 @@ class HealthMonitorPlugin(Star):
 
         data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
         data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = data_dir
         self.store = HealthStore(data_dir / "health.db")
 
         self.hr_threshold = self._as_int(self.config.get("hr_high_threshold"), 120)
@@ -107,6 +109,19 @@ class HealthMonitorPlugin(Star):
         if self._server is not None:
             self._server.stop()
             self._server = None
+
+    # --------------------------------------------------------- LLM 事件钩子
+
+    @filter.on_agent_done()
+    async def _cleanup_temp_after_agent(self, event: AstrMessageEvent, run_context: Any, resp: Any) -> None:
+        """Agent 对话完成后，清理该会话生成的未读临时文件（AI 没读就作废）。"""
+        try:
+            umo = getattr(event, "unified_msg_origin", None)
+            if not umo:
+                return
+            cleanup_for_tag(self.data_dir / "temp", temp_tag(str(umo)))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"临时文件清理失败: {e}")
 
     # ------------------------------------------------------------- Web API
 
