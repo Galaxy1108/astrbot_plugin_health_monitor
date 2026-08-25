@@ -19,7 +19,7 @@
 
 ## 功能
 
-- **独立上传端点**：`POST http://127.0.0.1:8765/upload`（经 Cloudflare Tunnel 暴露公网，见下）
+- **独立上传端点**：`POST http://127.0.0.1:8765/upload`（公网暴露方式见下，按你的部署环境任选）
   - 无需任何令牌；未配对设备数据不落库（`{"status":"pending_bind"}`）
 - **设备绑定（多用户）**：绑定码在手机 Gadgetbridge「设置 → 自动化 → Webhook 上传」页面显示（形如 `GB-XXXXXX`），随每次上传上报；聊天里发 `/bind GB-XXXXXX` 即可绑定
 - **数据存储**：`<AstrBot 数据目录>/astrbot_plugin_health_monitor/health.db`（SQLite）
@@ -36,24 +36,15 @@
 - **主动告警**：心率 ≥ 阈值（默认 120）或电量 ≤ 阈值（默认 15%）时，推送到该设备**所有绑定会话**；设备无绑定会话时才使用配置的兜底目标；30 分钟去重
 - **数据类别可开关**：手机端设置页可勾选要上传的数据类别，未勾选的不上传
 
-## Cloudflare Tunnel 暴露（推荐，无需开放入站端口）
+## 公网访问（按你的部署环境任选）
 
-服务器不开公网入站端口，用 cloudflared 出站隧道转发：
+插件默认监听 `127.0.0.1:8765`。要对外提供服务，任选一种方式：
 
-```yaml
-# cloudflared config.yml
-tunnel: <你的 tunnel id>
-credentials-file: /path/to/credentials.json
-ingress:
-  - hostname: astrbot.example.com      # AstrBot 管理面板
-    service: http://localhost:6185
-  - hostname: health.example.com       # 健康数据上传
-    service: http://localhost:8765
-  - service: http_status:404
-```
+- **Cloudflare Tunnel**（出站隧道，无需开放入站端口）：把域名 ingress 指向 `http://localhost:8765`；
+- **frp / nginx 反向代理**：转发到 `127.0.0.1:8765`；
+- **直连**：把 `server_host` 改为 `0.0.0.0`（自行确保网络安全）。
 
-手机端「服务器地址」填 `health.example.com`（协议和 `/upload` 路径自动补全）。
-注意：**不要在 Cloudflare 开启 Under Attack Mode / Bot Fight Mode**，会拦截 App 的非浏览器请求。
+手机端「服务器地址」填你的域名或地址（协议和 `/upload` 路径自动补全）。
 
 ## 支持的数据范围
 
