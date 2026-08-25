@@ -121,12 +121,13 @@ class HealthLatestTool(FunctionTool[AstrAgentContext]):
 
 @dataclass
 class HealthStepsTool(FunctionTool[AstrAgentContext]):
-    """查询步数。"""
+    """查询步数（总和或完整分钟曲线）。"""
 
     name: str = "health_steps"
     description: str = (
         "查询某一天的步数（仅当前用户已绑定设备）。date 为 YYYY-MM-DD，"
-        "或 today / yesterday。不传时默认今天。"
+        "或 today / yesterday。不传时默认今天。detail=false（默认）返回当天总步数；"
+        "detail=true 返回完整步数曲线（每分钟步数，数据量大时写入临时文件并用 read_temp_file 读取）。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -136,10 +137,15 @@ class HealthStepsTool(FunctionTool[AstrAgentContext]):
                     "type": "string",
                     "description": "日期：YYYY-MM-DD / today / yesterday",
                 },
+                "detail": {
+                    "type": "boolean",
+                    "description": "是否返回完整步数曲线（默认 false）",
+                },
             },
         }
     )
     store: Any = None
+    data_dir: Any = None
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
         device_ids = _scope(self.store, _current_umo(context))
@@ -149,18 +155,33 @@ class HealthStepsTool(FunctionTool[AstrAgentContext]):
         if day is None:
             return "日期格式无法识别，请使用 YYYY-MM-DD 或 today / yesterday。"
         total = self.store.steps_on(day, device_ids=device_ids)
-        return f"{day.isoformat()} 共走了 {total} 步。"
+        if not kwargs.get("detail"):
+            return f"{day.isoformat()} 共走了 {total} 步。"
+        if total == 0:
+            return f"{day.isoformat()} 没有步数数据。"
+        series = self.store.steps_series_on(day, device_ids=device_ids)
+        if len(series) <= _HR_INLINE_LIMIT:
+            inline = json.dumps(series, ensure_ascii=False, separators=(",", ":"))
+            return f"{day.isoformat()} 完整步数曲线（{len(series)} 点，共 {total} 步）：{inline}"
+        if self.data_dir is None:
+            return f"{day.isoformat()} 共 {len(series)} 个步数数据点，数据量较大，无法内联返回。"
+        tag = temp_tag(_current_umo(context) or "")
+        name = write_temp_series(Path(self.data_dir), series, tag=tag)
+        return (
+            f"{day.isoformat()} 共 {len(series)} 个步数数据点（共 {total} 步），已写入临时文件 {name}。"
+            f"请调用 read_temp_file 工具读取该文件（path 参数传 {name}），读取后文件会自动删除。"
+        )
 
 
 @dataclass
 class HealthSleepTool(FunctionTool[AstrAgentContext]):
-    """查询睡眠。"""
+    """查询睡眠（汇总或完整分期明细）。"""
 
     name: str = "health_sleep"
     description: str = (
-        "查询某天晚上的睡眠情况（前一晚 20:00 至当天 12:00），返回各睡眠阶段分钟数"
-        "（仅当前用户已绑定设备）。date 为 YYYY-MM-DD，或 today / yesterday；"
-        "不传时默认今天（即“昨晚”）。"
+        "查询某天晚上的睡眠情况（前一晚 20:00 至当天 12:00）。date 为 YYYY-MM-DD，"
+        "或 today / yesterday；不传时默认今天（即“昨晚”）。detail=false（默认）返回各睡眠阶段分钟数；"
+        "detail=true 返回完整睡眠分期明细（每分钟的阶段，数据量大时写入临时文件并用 read_temp_file 读取）。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -170,10 +191,15 @@ class HealthSleepTool(FunctionTool[AstrAgentContext]):
                     "type": "string",
                     "description": "日期：YYYY-MM-DD / today / yesterday",
                 },
+                "detail": {
+                    "type": "boolean",
+                    "description": "是否返回完整睡眠分期明细（默认 false）",
+                },
             },
         }
     )
     store: Any = None
+    data_dir: Any = None
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
         device_ids = _scope(self.store, _current_umo(context))
@@ -184,14 +210,29 @@ class HealthSleepTool(FunctionTool[AstrAgentContext]):
         total = summary["total_minutes"]
         if total == 0:
             return f"{day.isoformat()} 那晚没有睡眠数据。"
-        parts = [
-            f"总睡眠约 {total} 分钟（{total // 60} 小时 {total % 60} 分）",
-            f"深睡 {summary['DEEP_SLEEP']} 分钟",
-            f"浅睡 {summary['LIGHT_SLEEP']} 分钟",
-            f"REM 睡眠 {summary['REM_SLEEP']} 分钟",
-            f"清醒 {summary['AWAKE_SLEEP']} 分钟",
-        ]
-        return f"{day.isoformat()} 那晚：" + "，".join(parts) + "。"
+        if not kwargs.get("detail"):
+            parts = [
+                f"总睡眠约 {total} 分钟（{total // 60} 小时 {total % 60} 分）",
+                f"深睡 {summary['DEEP_SLEEP']} 分钟",
+                f"浅睡 {summary['LIGHT_SLEEP']} 分钟",
+                f"REM 睡眠 {summary['REM_SLEEP']} 分钟",
+                f"清醒 {summary['AWAKE_SLEEP']} 分钟",
+            ]
+            return f"{day.isoformat()} 那晚：" + "，".join(parts) + "。"
+        series = self.store.sleep_series_on(day, device_ids=device_ids)
+        pretty = [{"t": p["t"], "stage": _SLEEP_STAGE_NAMES.get(p["stage"], p["stage"])} for p in series]
+        if len(pretty) <= _HR_INLINE_LIMIT:
+            inline = json.dumps(pretty, ensure_ascii=False, separators=(",", ":"))
+            return f"{day.isoformat()} 那晚完整睡眠分期（{len(pretty)} 分钟）：{inline}"
+        if self.data_dir is None:
+            return f"{day.isoformat()} 那晚共 {len(pretty)} 分钟睡眠分期数据，数据量较大，无法内联返回。"
+        tag = temp_tag(_current_umo(context) or "")
+        name = write_temp_series(Path(self.data_dir), pretty, tag=tag)
+        return (
+            f"{day.isoformat()} 那晚共 {len(pretty)} 分钟睡眠分期数据，已写入临时文件 {name}。"
+            f"请调用 read_temp_file 工具读取该文件（path 参数传 {name}），读取后文件会自动删除。"
+        )
+
 
 
 @dataclass
@@ -461,7 +502,8 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
         "spo2（血氧）、stress（压力）、hrv（HRV/RR 间期）、respiration（睡眠呼吸率）、"
         "sleep_sessions（睡眠时段汇总）、dailysummary（每日汇总：步数/静息心率/压力等）、"
         "pai（PAI 活动指数）、workouts（运动记录：类型/距离/卡路里/步数/时长/平均心率）、"
-        "workout_hr（运动过程逐点心率/步频，数据量大时写入临时文件并用 read_temp_file 读取）。"
+        "workout_hr（运动过程逐点心率/步频）。detail=false（默认）返回最近几条；"
+        "detail=true 返回完整逐点序列（数据量大时写入临时文件并用 read_temp_file 读取）。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -473,6 +515,10 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
                     "description": "要查询的扩展指标",
                 },
                 "days": {"type": "integer", "description": "查询最近多少天的记录（默认 1）"},
+                "detail": {
+                    "type": "boolean",
+                    "description": "是否返回完整逐点序列（默认 false）",
+                },
             },
             "required": ["metric"],
         }
@@ -498,6 +544,18 @@ class HealthExtendedTool(FunctionTool[AstrAgentContext]):
         rows = self.store.extended_range(metric, device_ids=device_ids, since=since)
         if not rows:
             return f"最近 {days} 天没有{_EXTENDED_FORMATTERS[metric][0]}数据。"
+        if kwargs.get("detail") and metric not in ("workouts", "workout_hr"):
+            if len(rows) <= _HR_INLINE_LIMIT:
+                inline = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+                return f"最近 {days} 天{_EXTENDED_FORMATTERS[metric][0]}完整数据（{len(rows)} 条）：{inline}"
+            if self.data_dir is None:
+                return f"共 {len(rows)} 条数据，数据量较大，无法内联返回。"
+            tag = temp_tag(_current_umo(context) or "")
+            name = write_temp_series(Path(self.data_dir), rows, tag=tag)
+            return (
+                f"共 {len(rows)} 条{_EXTENDED_FORMATTERS[metric][0]}完整数据，已写入临时文件 {name}。"
+                f"请调用 read_temp_file 工具读取该文件（path 参数传 {name}），读取后文件会自动删除。"
+            )
         if metric == "workouts":
             lines = [_fmt_extended_row(metric, r) for r in rows[-5:]]
             return f"最近 {days} 天共 {len(rows)} 条运动记录，最近几条：\n" + "\n".join(lines)

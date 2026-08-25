@@ -81,8 +81,8 @@ class HealthMonitorPlugin(Star):
         context.add_llm_tools(
             HealthLatestTool(store=self.store),
             HealthHrHistoryTool(store=self.store, data_dir=data_dir),
-            HealthStepsTool(store=self.store),
-            HealthSleepTool(store=self.store),
+            HealthStepsTool(store=self.store, data_dir=data_dir),
+            HealthSleepTool(store=self.store, data_dir=data_dir),
             HealthAlertsTool(store=self.store),
             HealthExtendedTool(store=self.store, data_dir=data_dir),
             ReadTempFileTool(data_dir=data_dir),

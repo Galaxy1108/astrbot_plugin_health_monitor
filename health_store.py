@@ -537,6 +537,31 @@ class HealthStore:
         result["total_minutes"] = sum(result.values())
         return result
 
+    def sleep_series_on(self, date: datetime.date, device_ids: list[int] | None = None) -> list[dict]:
+        """“date 那晚”的睡眠分期明细（分钟粒度，按时间升序），供完整睡眠数据使用。"""
+        start = int(datetime(date.year, date.month, date.day, 20, 0).timestamp()) - 24 * 3600
+        end = int(datetime(date.year, date.month, date.day, 12, 0).timestamp())
+        scope, scope_args = self._scope_sql(device_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT ts, kind FROM samples WHERE ts >= ? AND ts < ?"
+                f" AND kind IN ('LIGHT_SLEEP','DEEP_SLEEP','REM_SLEEP','AWAKE_SLEEP'){scope} ORDER BY ts",
+                (start, end, *scope_args),
+            ).fetchall()
+        return [{"t": int(r["ts"]), "stage": str(r["kind"])} for r in rows]
+
+    def steps_series_on(self, date: datetime.date, device_ids: list[int] | None = None) -> list[dict]:
+        """某自然日的步数明细（steps>0，按时间升序），供完整步数曲线使用。"""
+        start = int(datetime(date.year, date.month, date.day).timestamp())
+        end = start + 24 * 3600
+        scope, scope_args = self._scope_sql(device_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT ts, steps FROM samples WHERE steps > 0 AND ts >= ? AND ts < ?{scope} ORDER BY ts",
+                (start, end, *scope_args),
+            ).fetchall()
+        return [{"t": int(r["ts"]), "steps": int(r["steps"])} for r in rows]
+
     def battery(self, device_ids: list[int] | None = None) -> list[dict]:
         """设备的最近电量与最后上报时间。"""
         scope, scope_args = self._scope_sql(device_ids, column="d.id")
