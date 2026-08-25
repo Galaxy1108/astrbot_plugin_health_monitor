@@ -6,6 +6,47 @@
 
 **多用户**：数据按"会话 ↔ 设备绑定"隔离 —— 一个设备可被多个会话绑定（如家庭群 + 私聊），一个会话可绑定多个设备。
 
+## 封面（AI 生成提示）
+
+> 封面中的智能手环/手表即配套的**改装版 Gadgetbridge 手机端**（见下文「配套软件」章节），
+> 它把健康数据上传给本插件，再由 AI 机器人以自然语言回答你的查询。
+
+**方案一 · 科技插画风（推荐）**
+
+```text
+Flat modern illustration for a health-monitoring chatbot plugin cover.
+A smart band (smartwatch) on a wrist connects wirelessly to a glowing
+chatbot/robot head in the center; between them flow streams of health data:
+heart-rate ECG line, step count, moon-and-bed sleep icons, running figure,
+battery icon. The robot head shows a friendly chat bubble containing a
+heart-rate curve. Soft dark blue-to-purple gradient background with subtle
+grid. Clean vector style, rounded shapes, generous negative space, modern
+tech aesthetic, high contrast, no text.
+```
+
+**方案二 · 暗色 3D 渲染风（更有质感）**
+
+```text
+Cinematic 3D render, dark theme: a smartwatch floating in the center
+displaying a glowing heart-rate curve, surrounded by floating glassmorphic
+data cards (steps, sleep stages, SpO2, battery), a soft neon chatbot orb
+gently pulsing behind it. Deep navy background, volumetric light, cyan and
+violet neon accents, subtle depth of field, premium tech product shot,
+octane render style, no text.
+```
+
+**方案三 · 简约扁平图标风（适合小尺寸展示）**
+
+```text
+Minimal flat icon illustration: a rounded-square health app icon combining
+a heartbeat pulse line and a chat bubble, with a small smart band at the
+bottom. Two-tone gradient (blue to teal) on white background, single
+centered composition, crisp vector, modern minimalism, no text.
+```
+
+> 提示词均为英文无文字版本，通用性最好；如需中文标题，去掉 `no text` 并追加
+> `with the Chinese text 健康数据监控`。生成尺寸建议 `16:9`（GitHub 封面/横幅）或 `3:2`。
+
 ## 功能
 
 - **独立上传端点**：`POST http://127.0.0.1:8765/upload`（经 Cloudflare Tunnel 暴露公网，见下）
@@ -149,6 +190,41 @@ python3 -m venv .venv
 
 核心逻辑在 `health_store.py`（纯 SQLite，可独立测试）；`main.py` 只做 AstrBot 接线。
 
+## 配套软件：改装版 Gadgetbridge（手机端）
+
+本插件需要配套的**改装版 Gadgetbridge**（带 Webhook 上传模块）把健康数据传上来。手机端与服务器端是两个独立的仓库：
+
+- 手机端（本插件配套）：https://github.com/Galaxy1108/gadgetbridge-webhook （`webhook-module` 分支）
+- 服务器端（本仓库）：即当前插件
+
+### 1. 安装 APK
+
+从 `gadgetbridge-webhook` 仓库的 **Releases** 下载最新 APK（文件名形如
+`gadgetbridge-webhook-mainlineDebug-<commit>.apk`，带 commit 号用于区分版本），
+覆盖安装即可（版本号保持 `0.93.0`，升级不会清除数据）。
+
+> 若提示"已存在更高版本"，说明手机上是更新构建的包，无需降级。
+
+### 2. 配置上传（设置 → 自动化 → Webhook 上传）
+
+1. 打开 **Webhook 上传** 开关；
+2. **服务器地址**：只填根地址，例如 `health.example.com`（不要加 `https://` 和路径，
+   插件自动补全为 `https://health.example.com/upload`；自建 http 需另开"允许不安全连接"）；
+3. **复制绑定码**：点"绑定码"一行会复制完整命令 `/bind GB-XXXXXX`，
+   把它发给机器人完成配对（配对前数据不落库）；
+4. **数据类型**：默认全选即可（步数 / 心率 / 睡眠 / 运动记录 / 血氧 / 压力等）；
+5. **立即上传**：点击测试；积压超过 7 天时会询问上传范围（全部 / 仅最近 7 天）；
+   **重置上传游标** 可强制从更早的数据重新上传（如换服务器后回补历史）。
+
+### 3. 验证
+
+- 服务器端：`/devices` 查看已绑定设备与最后上报时间；
+- 对机器人说"现在心率多少""今天走了多少步""昨晚睡眠怎么样""最近运动记录"
+  验证自然语言查询；心率过高 / 电量过低会自动推送告警。
+
+> 详细说明见手机端仓库的 `WEBHOOK_SETUP.md`。
+
 ## 相关项目
 
-- 手机端：https://github.com/Galaxy1108/gadgetbridge-webhook
+- 手机端（配套改装版 Gadgetbridge）：https://github.com/Galaxy1108/gadgetbridge-webhook
+- 上游 Gadgetbridge：https://gadgetbridge.org
