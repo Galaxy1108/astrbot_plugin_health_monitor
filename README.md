@@ -171,9 +171,12 @@ APK 产物由 **GitHub Actions** 构建，从 Actions 页面下载：
 3. 在 **Artifacts** 下载 `apk-Debug-webhook-module`，里面是
    `gadgetbridge-webhook-debug-webhook-module-<sha>.apk`（带 commit 号区分版本）。
 
-覆盖安装即可（版本号保持 `0.93.0`，升级不会清除数据）。
+版本号保持 `0.93.0`，版本差异看文件名里的 commit 号。安装方式取决于当前已装的包：
 
-> 若提示"已存在更高版本"，说明手机上是更新构建的包，无需降级。
+- **正常覆盖安装**（当前包 versionCode ≤ 新包）：数据保留，直接覆盖；
+- **提示"已存在更高版本"**：说明当前包比下载的新，去 Actions 拿最新一次构建即可；
+- **签名不一致**（极少见，如换过构建来源）：需先卸载，**卸载会清空本地数据**——
+  可先在 GB「数据管理」里备份（Backup to zip），装好后从 zip 恢复。
 
 ### 2. 配置上传（设置 → 自动化 → Webhook 上传）
 
