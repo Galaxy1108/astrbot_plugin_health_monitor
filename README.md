@@ -1,51 +1,16 @@
 # astrbot_plugin_health_monitor
 
+> [!IMPORTANT]
+> 本项目代码完全由 AI 生成，仅经过基本人工验证
+
+> [!NOTE]
+> 本插件需要配套的**改装版 Gadgetbridge 手机端**（带 Webhook 上传模块）才能工作，手机端操作见下文「配套软件」章节。
+
 健康数据监控插件：接收改装版 [Gadgetbridge](https://gadgetbridge.org) 手机端通过 HTTP 上传的健康数据（步数 / 心率 / 睡眠 / 电量等），存入 SQLite；注册 LLM 工具支持自然语言查询，并在心率过高、电量过低时推送主动告警。
 
 **安全模型（无令牌）**：不需要 API Key / 令牌。插件自带独立上传服务（默认 `127.0.0.1:8765`），**绑定码即门禁** —— 设备未被任何会话绑定（配对）前，上传的数据一律不落库，返回 `pending_bind`，手机端进入"等待配对"；只有对机器人发送 `/bind <绑定码>` 完成配对后才开始接收数据。
 
 **多用户**：数据按"会话 ↔ 设备绑定"隔离 —— 一个设备可被多个会话绑定（如家庭群 + 私聊），一个会话可绑定多个设备。
-
-## 封面（AI 生成提示）
-
-> 封面中的智能手环/手表即配套的**改装版 Gadgetbridge 手机端**（见下文「配套软件」章节），
-> 它把健康数据上传给本插件，再由 AI 机器人以自然语言回答你的查询。
-
-**方案一 · 科技插画风（推荐）**
-
-```text
-Flat modern illustration for a health-monitoring chatbot plugin cover.
-A smart band (smartwatch) on a wrist connects wirelessly to a glowing
-chatbot/robot head in the center; between them flow streams of health data:
-heart-rate ECG line, step count, moon-and-bed sleep icons, running figure,
-battery icon. The robot head shows a friendly chat bubble containing a
-heart-rate curve. Soft dark blue-to-purple gradient background with subtle
-grid. Clean vector style, rounded shapes, generous negative space, modern
-tech aesthetic, high contrast, no text.
-```
-
-**方案二 · 暗色 3D 渲染风（更有质感）**
-
-```text
-Cinematic 3D render, dark theme: a smartwatch floating in the center
-displaying a glowing heart-rate curve, surrounded by floating glassmorphic
-data cards (steps, sleep stages, SpO2, battery), a soft neon chatbot orb
-gently pulsing behind it. Deep navy background, volumetric light, cyan and
-violet neon accents, subtle depth of field, premium tech product shot,
-octane render style, no text.
-```
-
-**方案三 · 简约扁平图标风（适合小尺寸展示）**
-
-```text
-Minimal flat icon illustration: a rounded-square health app icon combining
-a heartbeat pulse line and a chat bubble, with a small smart band at the
-bottom. Two-tone gradient (blue to teal) on white background, single
-centered composition, crisp vector, modern minimalism, no text.
-```
-
-> 提示词均为英文无文字版本，通用性最好；如需中文标题，去掉 `no text` 并追加
-> `with the Chinese text 健康数据监控`。生成尺寸建议 `16:9`（GitHub 封面/横幅）或 `3:2`。
 
 ## 功能
 
