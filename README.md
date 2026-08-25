@@ -1,17 +1,15 @@
 # astrbot_plugin_health_monitor
 
 > [!IMPORTANT]
-> **连接独占性**：改装版 Gadgetbridge 连接手环时会独占蓝牙连接——同一时间只能有一个 App 连接手环，
-> 华为运动健康等官方 App 无法同时连接；切换需先断开一边（官方 App 后台常驻会自动抢连，可限制其后台运行）。
+> 本插件需要配套的**改装版 Gadgetbridge 手机端**（带 Webhook 上传模块）才能工作，手机端操作见下文「配套软件」章节。
+> 该改装版连接手环时会**独占蓝牙连接**——同一时间只能有一个 App 连接手环，华为运动健康等官方 App 无法同时连接；
+> 切换需先断开一边（官方 App 后台常驻会自动抢连，可限制其后台运行）。
 
 > [!IMPORTANT]
 > **我的设备是否被支持？** 请到 [Gadgetbridge 支持设备列表](https://gadgetbridge.org/gadgets/wearables/) 查询你的手环/手表可用性。
 
 > [!NOTE]
 > 本项目代码完全由 AI 生成，仅经过基本人工验证
-
-> [!NOTE]
-> 本插件需要配套的**改装版 Gadgetbridge 手机端**（带 Webhook 上传模块）才能工作，手机端操作见下文「配套软件」章节。
 
 健康数据监控插件：接收改装版 [Gadgetbridge](https://gadgetbridge.org) 手机端通过 HTTP 上传的健康数据（步数 / 心率 / 睡眠 / 电量等），存入 SQLite；注册 LLM 工具支持自然语言查询，并在心率过高、电量过低时推送主动告警。
 
