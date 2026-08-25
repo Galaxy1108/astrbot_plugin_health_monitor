@@ -1,5 +1,9 @@
 # astrbot_plugin_health_monitor
 
+<p align="center">
+  <img src="docs/cover.png" alt="健康数据监控" width="320"/>
+</p>
+
 > [!IMPORTANT]
 > 本项目代码完全由 AI 生成，仅经过基本人工验证
 
