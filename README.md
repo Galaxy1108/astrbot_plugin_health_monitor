@@ -164,8 +164,14 @@ python3 -m venv .venv
 
 ### 1. 安装 APK
 
-从 `gadgetbridge-webhook` 仓库的 **Releases** 下载最新 APK（文件名形如
-`gadgetbridge-webhook-mainlineDebug-<commit>.apk`，带 commit 号用于区分版本），
+APK 产物由 **GitHub Actions** 构建，从 Actions 页面下载：
+
+1. 打开 `gadgetbridge-webhook` 仓库的 **Actions** 页 → 选择 **Build APK** workflow；
+2. 选最新一次运行（`webhook-module` 分支、Debug 变体），或点右上角
+   **Run workflow** 手动触发一次（分支选 `webhook-module`，变体选 `Debug`）；
+3. 运行完成后在 **Artifacts** 下载 `apk-Debug-webhook-module`，里面是
+   `gadgetbridge-webhook-debug-webhook-module-<sha>.apk`（带 commit 号区分版本）。
+
 覆盖安装即可（版本号保持 `0.93.0`，升级不会清除数据）。
 
 > 若提示"已存在更高版本"，说明手机上是更新构建的包，无需降级。
