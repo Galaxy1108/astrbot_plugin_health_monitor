@@ -1,10 +1,13 @@
 # astrbot_plugin_health_monitor
 
-<p align="center">
-  <img src="docs/cover.png" alt="健康数据监控" width="320"/>
-</p>
+> [!IMPORTANT]
+> **连接独占性**：改装版 Gadgetbridge 连接手环时会独占蓝牙连接——同一时间只能有一个 App 连接手环，
+> 华为运动健康等官方 App 无法同时连接；切换需先断开一边（官方 App 后台常驻会自动抢连，可限制其后台运行）。
 
 > [!IMPORTANT]
+> **我的设备是否被支持？** 请到 [Gadgetbridge 支持设备列表](https://gadgetbridge.org/gadgets/wearables/) 查询你的手环/手表可用性。
+
+> [!NOTE]
 > 本项目代码完全由 AI 生成，仅经过基本人工验证
 
 > [!NOTE]
